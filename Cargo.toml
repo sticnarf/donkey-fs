@@ -1,0 +1,6 @@
+[package]
+name = "donkey-fs"
+version = "0.1.0"
+authors = ["Yilin Chen <sticnarf@gmail.com>"]
+
+[dependencies]
