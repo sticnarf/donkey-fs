@@ -2,5 +2,4 @@
 **/*.rs.bk
 
 # Ignore IDE supporting files
-/rls
 /.idea
