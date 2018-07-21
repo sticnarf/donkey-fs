@@ -9,6 +9,8 @@ extern crate failure_derive;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
+#[macro_use]
+extern crate nix;
 
 use slog::{Drain, Logger};
 use std::fs::*;
@@ -27,6 +29,11 @@ enum MakefsError {
         #[cause]
         e: bincode::Error,
     },
+    #[fail(display = "Ioctl error: {}", e)]
+    IoctlError {
+        #[cause]
+        e: nix::Error,
+    },
     #[fail(display = "The device is not supported.")]
     UnsupportedDeviceError,
 }
@@ -40,6 +47,12 @@ impl From<io::Error> for MakefsError {
 impl From<bincode::Error> for MakefsError {
     fn from(e: bincode::Error) -> MakefsError {
         MakefsError::SerializeBlockError { e }
+    }
+}
+
+impl From<nix::Error> for MakefsError {
+    fn from(e: nix::Error) -> MakefsError {
+        MakefsError::IoctlError { e }
     }
 }
 
@@ -99,6 +112,7 @@ fn mkfs(opt: FsOptions, log: Logger) -> Result<(), MakefsError> {
     let block_count =
         (dev_size - BOOT_BLOCK_SIZE - SUPER_BLOCK_SIZE - inode_count * INODE_SIZE) / BLOCK_SIZE;
 
+    info!(log, "Device size: {} bytes", dev_size);
     info!(log, "Inode count: {}", inode_count);
     info!(log, "Block count: {}", block_count);
 
@@ -160,8 +174,48 @@ fn dev_size(dev: &File, log: Logger) -> Result<u64, MakefsError> {
     }
 }
 
-fn block_dev_size(dev: &File, log: Logger) -> Result<u64, MakefsError> {
-    unimplemented!()
+// #[cfg(target_os = "linux")]
+fn block_dev_size(dev: &File, _log: Logger) -> Result<u64, MakefsError> {
+    use std::os::unix::io::{AsRawFd, RawFd};
+    let fd = dev.as_raw_fd();
+
+    #[cfg(target_os = "linux")]
+    fn getsize(fd: RawFd) -> Result<u64, MakefsError> {
+        // https://github.com/torvalds/linux/blob/v4.17/include/uapi/linux/fs.h#L216
+        ioctl_read!(getsize64, 0x12, 114, u64);
+        let mut size: u64 = 0;
+        unsafe {
+            getsize64(fd, &mut size)?;
+        }
+        Ok(size)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn getsize(fd: RawFd) -> Result<u64, MakefsError> {
+        // https://github.com/apple/darwin-xnu/blob/xnu-4570.1.46/bsd/sys/disk.h#L203
+        ioctl_read!(getblksize, b'd', 24, u32);
+        ioctl_read!(getblkcount, b'd', 25, u64);
+        let mut blksize: u32 = 0;
+        let mut blkcount: u64 = 0;
+        unsafe {
+            getblksize(fd, &mut blksize)?;
+            getblkcount(fd, &mut blkcount)?;
+        }
+        Ok(blksize as u64 * blkcount)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    fn getsize(fd: RawFd) -> Result<u64, MakefsError> {
+        // https://github.com/freebsd/freebsd/blob/stable/11/sys/sys/disk.h#L37
+        ioctl_read!(getmediasize, b'd', 129, u64);
+        let mut size: u64 = 0;
+        unsafe {
+            getmediasize(fd, &mut size)?;
+        }
+        Ok(size)
+    }
+
+    getsize(fd)
 }
 
 #[repr(C)]
