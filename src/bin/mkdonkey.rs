@@ -11,10 +11,14 @@ extern crate serde_derive;
 extern crate bincode;
 #[macro_use]
 extern crate nix;
+#[macro_use]
+extern crate bitflags;
+#[macro_use]
+extern crate static_assertions;
 
 use slog::{Drain, Logger};
 use std::fs::*;
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom};
 use std::mem::size_of;
 
 #[derive(Debug, Fail)]
@@ -109,15 +113,26 @@ fn mkfs(opt: FsOptions, log: Logger) -> Result<(), MakefsError> {
     let mut dev = OpenOptions::new().write(true).open(opt.dev_path)?;
     let dev_size = dev_size(&dev, log.clone())?;
     let inode_count = dev_size / opt.bytes_per_inode;
-    let block_count =
+    let data_block_count =
         (dev_size - BOOT_BLOCK_SIZE - SUPER_BLOCK_SIZE - inode_count * INODE_SIZE) / BLOCK_SIZE;
 
     info!(log, "Device size: {} bytes", dev_size);
     info!(log, "Inode count: {}", inode_count);
-    info!(log, "Block count: {}", block_count);
+    info!(log, "Data block count: {}", data_block_count);
 
+    dev.seek(SeekFrom::Start(0))?; // Dummy
     make_boot_block(&mut dev, log.clone())?;
-    make_super_block(&mut dev, inode_count, block_count, log.clone())?;
+
+    dev.seek(SeekFrom::Start(BOOT_BLOCK_SIZE))?;
+    make_super_block(&mut dev, inode_count, data_block_count, log.clone())?;
+
+    dev.seek(SeekFrom::Start(BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE))?;
+    make_inodes(&mut dev, inode_count, log.clone())?;
+
+    dev.seek(SeekFrom::Start(
+        BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE + inode_count * INODE_SIZE,
+    ))?;
+    make_data_blocks(&mut dev, data_block_count, log.clone())?;
     Ok(())
 }
 
@@ -126,35 +141,44 @@ fn make_boot_block(dev: &mut File, log: Logger) -> Result<(), MakefsError> {
     let boot_block = BootBlock {
         ..Default::default()
     };
-    assert_eq!(size_of::<BootBlock>(), 1024);
-    let mut block_slice = [0u8; size_of::<BootBlock>()];
-    bincode::serialize_into(&mut block_slice[..], &boot_block)?;
-    dev.write_all(&block_slice)?;
+    bincode::serialize_into(dev, &boot_block)?;
     Ok(())
 }
 
 fn make_super_block(
     dev: &mut File,
     inode_count: u64,
-    block_count: u64,
+    data_block_count: u64,
     log: Logger,
 ) -> Result<(), MakefsError> {
     info!(log, "Making the super block...");
     let super_block = SuperBlock {
         magic_number: MAGIC_NUMBER,
         inode_count,
-        block_count,
-        used_inode_count: 1,
-        used_block_count: 1,
-        root_inode_ptr: 0,
-        free_inode_ptr: 1,
-        free_block_ptr: 1,
+        data_block_count,
         ..Default::default()
     };
-    assert_eq!(size_of::<SuperBlock>(), 1024);
-    let mut block_slice = [0u8; size_of::<SuperBlock>()];
-    bincode::serialize_into(&mut block_slice[..], &super_block)?;
-    dev.write_all(&block_slice)?;
+    bincode::serialize_into(dev, &super_block)?;
+    Ok(())
+}
+
+fn make_inodes(dev: &mut File, inode_count: u64, log: Logger) -> Result<(), MakefsError> {
+    info!(log, "Making inodes...");
+    let init_inode = Inode::FreeInode {
+        free_count: inode_count,
+        next_free: 0,
+    };
+    bincode::serialize_into(dev, &init_inode)?;
+    Ok(())
+}
+
+fn make_data_blocks(dev: &mut File, data_block_count: u64, log: Logger) -> Result<(), MakefsError> {
+    info!(log, "Making data blocks...");
+    let init_data_block = FreeDataBlock {
+        free_count: data_block_count,
+        next_free: 0,
+    };
+    bincode::serialize_into(dev, &init_data_block)?;
     Ok(())
 }
 
@@ -218,29 +242,85 @@ fn block_dev_size(dev: &File, _log: Logger) -> Result<u64, MakefsError> {
     getsize(fd)
 }
 
-#[repr(C)]
+// A boot block occupies 1024 bytes.
 #[derive(Serialize, Deserialize, Default)]
 struct BootBlock {
-    _padding: [Padding256B; 4],
+    // _padding: [Padding256B; 4],
 }
 
-#[repr(C)]
+const_assert!(boot_block; (size_of::<BootBlock>() as u64) <= BOOT_BLOCK_SIZE);
+
+// A super block occupies 1024 bytes.
 #[derive(Serialize, Deserialize, Default)]
 struct SuperBlock {
     magic_number: u64,
     inode_count: u64,
     used_inode_count: u64,
-    block_count: u64,
-    used_block_count: u64,
+    data_block_count: u64,
+    used_data_block_count: u64,
     root_inode_ptr: u64,
     free_inode_ptr: u64,
     free_block_ptr: u64,
-    _padding: ([Padding256B; 3], [u64; 24]),
+    // _padding: ([Padding256B; 3], [u64; 24]),
 }
 
-#[repr(C)]
-#[derive(Serialize, Deserialize, Copy, Clone, Default)]
-struct Padding256B([u64; 32]);
+const_assert!(super_block; (size_of::<SuperBlock>() as u64) <= SUPER_BLOCK_SIZE);
+
+bitflags! {
+    #[derive(Serialize, Deserialize)]
+    struct FileMode: u32 {
+        const REGULAR_FILE = 0b00000001;
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct TimeSpec {
+    sec: i64,
+    nsec: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+enum Inode {
+    FreeInode {
+        free_count: u64,
+        next_free: u64,
+    },
+    UsedInode {
+        mode: FileMode,
+        uid: u32,
+        gid: u32,
+        link_count: u64,
+        atime: TimeSpec,
+        mtime: TimeSpec,
+        ctime: TimeSpec,
+        // file size for regular file, device number for device
+        size_or_device: u64,
+        direct_ptrs: [u64; 12],
+        indirect_ptr: u64,
+        double_indirect_ptr: u64,
+        triple_indirect_ptr: u64,
+        quadruple_indirect_ptr: u64,
+    },
+}
+
+const_assert!(inode; (size_of::<Inode>() as u64) <= INODE_SIZE);
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct FreeDataBlock {
+    free_count: u64,
+    next_free: u64,
+}
+
+union DataBlock {
+    _data: [u8; 4096],
+    _ptrs: [u64; 512],
+    _free: FreeDataBlock,
+}
+
+const_assert!(data_block; (size_of::<DataBlock>() as u64) <= BLOCK_SIZE);
+
+// #[derive(Serialize, Deserialize, Copy, Clone, Default)]
+// struct Padding256B([u64; 32]);
 
 fn logger() -> Logger {
     let plain = slog_term::TermDecorator::new().build();
