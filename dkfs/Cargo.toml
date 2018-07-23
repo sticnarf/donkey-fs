@@ -1,0 +1,10 @@
+[package]
+name = "dkfs"
+version = "0.1.0"
+authors = ["Yilin Chen <sticnarf@gmail.com>"]
+
+[dependencies]
+serde = "1.0.70"
+serde_derive = "1.0.70"
+bitflags = "1.0.3"
+static_assertions = "0.2.5"

@@ -6,20 +6,15 @@ extern crate failure;
 extern crate slog_term;
 #[macro_use]
 extern crate failure_derive;
-#[macro_use]
-extern crate serde_derive;
 extern crate bincode;
 #[macro_use]
 extern crate nix;
-#[macro_use]
-extern crate bitflags;
-#[macro_use]
-extern crate static_assertions;
+extern crate dkfs;
 
+use dkfs::*;
 use slog::{Drain, Logger};
 use std::fs::*;
 use std::io::{self, Seek, SeekFrom};
-use std::mem::size_of;
 
 #[derive(Debug, Fail)]
 enum MakefsError {
@@ -60,11 +55,6 @@ impl From<nix::Error> for MakefsError {
     }
 }
 
-const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
-const BOOT_BLOCK_SIZE: u64 = 1024;
-const SUPER_BLOCK_SIZE: u64 = 1024;
-const INODE_SIZE: u64 = 256;
-const BLOCK_SIZE: u64 = 4096;
 const DEFAULT_BYTES_PER_NODE_STR: &'static str = "16384";
 
 fn main() {
@@ -138,9 +128,7 @@ fn mkfs(opt: FsOptions, log: Logger) -> Result<(), MakefsError> {
 
 fn make_boot_block(dev: &mut File, log: Logger) -> Result<(), MakefsError> {
     info!(log, "Making the boot block...");
-    let boot_block = BootBlock {
-        ..Default::default()
-    };
+    let boot_block = BootBlock::new();
     bincode::serialize_into(dev, &boot_block)?;
     Ok(())
 }
@@ -241,86 +229,6 @@ fn block_dev_size(dev: &File, _log: Logger) -> Result<u64, MakefsError> {
 
     getsize(fd)
 }
-
-// A boot block occupies 1024 bytes.
-#[derive(Serialize, Deserialize, Default)]
-struct BootBlock {
-    // _padding: [Padding256B; 4],
-}
-
-const_assert!(boot_block; (size_of::<BootBlock>() as u64) <= BOOT_BLOCK_SIZE);
-
-// A super block occupies 1024 bytes.
-#[derive(Serialize, Deserialize, Default)]
-struct SuperBlock {
-    magic_number: u64,
-    inode_count: u64,
-    used_inode_count: u64,
-    data_block_count: u64,
-    used_data_block_count: u64,
-    root_inode_ptr: u64,
-    free_inode_ptr: u64,
-    free_block_ptr: u64,
-    // _padding: ([Padding256B; 3], [u64; 24]),
-}
-
-const_assert!(super_block; (size_of::<SuperBlock>() as u64) <= SUPER_BLOCK_SIZE);
-
-bitflags! {
-    #[derive(Serialize, Deserialize)]
-    struct FileMode: u32 {
-        const REGULAR_FILE = 0b00000001;
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct TimeSpec {
-    sec: i64,
-    nsec: i64,
-}
-
-#[derive(Serialize, Deserialize)]
-enum Inode {
-    FreeInode {
-        free_count: u64,
-        next_free: u64,
-    },
-    UsedInode {
-        mode: FileMode,
-        uid: u32,
-        gid: u32,
-        link_count: u64,
-        atime: TimeSpec,
-        mtime: TimeSpec,
-        ctime: TimeSpec,
-        // file size for regular file, device number for device
-        size_or_device: u64,
-        direct_ptrs: [u64; 12],
-        indirect_ptr: u64,
-        double_indirect_ptr: u64,
-        triple_indirect_ptr: u64,
-        quadruple_indirect_ptr: u64,
-    },
-}
-
-const_assert!(inode; (size_of::<Inode>() as u64) <= INODE_SIZE);
-
-#[derive(Serialize, Deserialize, Clone, Copy)]
-struct FreeDataBlock {
-    free_count: u64,
-    next_free: u64,
-}
-
-union DataBlock {
-    _data: [u8; 4096],
-    _ptrs: [u64; 512],
-    _free: FreeDataBlock,
-}
-
-const_assert!(data_block; (size_of::<DataBlock>() as u64) <= BLOCK_SIZE);
-
-// #[derive(Serialize, Deserialize, Copy, Clone, Default)]
-// struct Padding256B([u64; 32]);
 
 fn logger() -> Logger {
     let plain = slog_term::TermDecorator::new().build();
