@@ -4,19 +4,198 @@ extern crate serde_derive;
 extern crate bitflags;
 #[macro_use]
 extern crate static_assertions;
+extern crate failure;
+#[macro_use]
+extern crate failure_derive;
+extern crate bincode;
+#[macro_use]
+extern crate nix;
+#[macro_use]
+extern crate slog;
+#[macro_use]
+extern crate slog_try;
 
+use slog::Logger;
 use std::fs::*;
+use std::io::{self, Seek, SeekFrom};
 use std::mem::size_of;
+use std::path::Path;
 
 pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 pub const BOOT_BLOCK_SIZE: u64 = 1024;
 pub const SUPER_BLOCK_SIZE: u64 = 1024;
 pub const INODE_SIZE: u64 = 256;
 pub const BLOCK_SIZE: u64 = 4096;
+pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
+pub const DEFAULT_BYTES_PER_INODE_STR: &'static str = "16384";
 
-pub struct DonkeyFS {
-    pub dev: File,
-    pub super_block: SuperBlock,
+pub struct DonkeyBuilder {
+    dev: File,
+}
+
+pub struct Donkey {
+    dev: File,
+    super_block: SuperBlock,
+}
+
+impl Donkey {
+    pub fn create<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, DonkeyFail> {
+        let dev = OpenOptions::new().write(true).open(dev_path)?;
+        Ok(DonkeyBuilder { dev })
+    }
+}
+
+impl DonkeyBuilder {
+    pub fn open(self) -> Result<Donkey, DonkeyFail> {
+        unimplemented!()
+    }
+
+    pub fn format(
+        mut self,
+        opts: &FormatOptions,
+        log: Option<Logger>,
+    ) -> Result<Donkey, DonkeyFail> {
+        let dev_size = dev_size(&self.dev, log.clone())?;
+        let inode_count = dev_size / opts.bytes_per_inode;
+        let data_block_count =
+            (dev_size - BOOT_BLOCK_SIZE - SUPER_BLOCK_SIZE - inode_count * INODE_SIZE) / BLOCK_SIZE;
+
+        try_info!(log, "Device size: {} bytes", dev_size);
+        try_info!(log, "Inode count: {}", inode_count);
+        try_info!(log, "Data block count: {}", data_block_count);
+
+        self.dev.seek(SeekFrom::Start(0))?; // Dummy
+        make_boot_block(&mut self.dev, log.clone())?;
+
+        self.dev.seek(SeekFrom::Start(BOOT_BLOCK_SIZE))?;
+        make_super_block(&mut self.dev, inode_count, data_block_count, log.clone())?;
+
+        self.dev
+            .seek(SeekFrom::Start(BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE))?;
+        make_inodes(&mut self.dev, inode_count, log.clone())?;
+
+        self.dev.seek(SeekFrom::Start(
+            BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE + inode_count * INODE_SIZE,
+        ))?;
+        make_data_blocks(&mut self.dev, data_block_count, log.clone())?;
+
+        self.open()
+    }
+}
+
+fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), FormatFail> {
+    try_info!(log, "Making the boot block...");
+    let boot_block = BootBlock::init();
+    bincode::serialize_into(dev, &boot_block)?;
+    Ok(())
+}
+
+fn make_super_block(
+    dev: &mut File,
+    inode_count: u64,
+    data_block_count: u64,
+    log: Option<Logger>,
+) -> Result<(), FormatFail> {
+    try_info!(log, "Making the super block...");
+    let super_block = SuperBlock::init(inode_count, data_block_count);
+    bincode::serialize_into(dev, &super_block)?;
+    Ok(())
+}
+
+fn make_inodes(dev: &mut File, inode_count: u64, log: Option<Logger>) -> Result<(), FormatFail> {
+    try_info!(log, "Making inodes...");
+    let init_inode = Inode::init(inode_count);
+    bincode::serialize_into(dev, &init_inode)?;
+    Ok(())
+}
+
+fn make_data_blocks(
+    dev: &mut File,
+    data_block_count: u64,
+    log: Option<Logger>,
+) -> Result<(), FormatFail> {
+    try_info!(log, "Making data blocks...");
+    let init_data_block = DataBlock::init(data_block_count);
+    let free_data_block = unsafe { init_data_block.free };
+    bincode::serialize_into(dev, &free_data_block)?;
+    Ok(())
+}
+
+fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, FormatFail> {
+    let metadata = dev.metadata()?;
+    let file_type = metadata.file_type();
+
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    if file_type.is_file() {
+        try_info!(log, "Regular file detected. Treat it as an image file.");
+        Ok(metadata.size())
+    } else if file_type.is_block_device() {
+        try_info!(log, "Block device detected.");
+        block_dev_size(&dev, log)
+    } else {
+        Err(FormatFail::UnsupportedDeviceError.into())
+    }
+}
+
+// #[cfg(target_os = "linux")]
+fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, FormatFail> {
+    use std::os::unix::io::{AsRawFd, RawFd};
+    let fd = dev.as_raw_fd();
+
+    #[cfg(target_os = "linux")]
+    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+        // https://github.com/torvalds/linux/blob/v4.17/include/uapi/linux/fs.h#L216
+        ioctl_read!(getsize64, 0x12, 114, u64);
+        let mut size: u64 = 0;
+        unsafe {
+            getsize64(fd, &mut size)?;
+        }
+        Ok(size)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+        // https://github.com/apple/darwin-xnu/blob/xnu-4570.1.46/bsd/sys/disk.h#L203
+        ioctl_read!(getblksize, b'd', 24, u32);
+        ioctl_read!(getblkcount, b'd', 25, u64);
+        let mut blksize: u32 = 0;
+        let mut blkcount: u64 = 0;
+        unsafe {
+            getblksize(fd, &mut blksize)?;
+            getblkcount(fd, &mut blkcount)?;
+        }
+        Ok(blksize as u64 * blkcount)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+        // https://github.com/freebsd/freebsd/blob/stable/11/sys/sys/disk.h#L37
+        ioctl_read!(getmediasize, b'd', 129, u64);
+        let mut size: u64 = 0;
+        unsafe {
+            getmediasize(fd, &mut size)?;
+        }
+        Ok(size)
+    }
+
+    getsize(fd)
+}
+
+pub struct FormatOptions {
+    bytes_per_inode: u64,
+}
+
+impl FormatOptions {
+    pub fn new() -> Self {
+        FormatOptions {
+            bytes_per_inode: DEFAULT_BYTES_PER_INODE,
+        }
+    }
+
+    pub fn bytes_per_inode(mut self, bytes_per_inode: u64) -> Self {
+        self.bytes_per_inode = bytes_per_inode;
+        self
+    }
 }
 
 // A boot block occupies 1024 bytes.
@@ -26,7 +205,7 @@ pub struct BootBlock {}
 const_assert!(boot_block; (size_of::<BootBlock>() as u64) <= BOOT_BLOCK_SIZE);
 
 impl BootBlock {
-    pub fn new() -> Self {
+    pub fn init() -> Self {
         BootBlock {}
     }
 }
@@ -45,6 +224,17 @@ pub struct SuperBlock {
 }
 
 const_assert!(super_block; (size_of::<SuperBlock>() as u64) <= SUPER_BLOCK_SIZE);
+
+impl SuperBlock {
+    pub fn init(inode_count: u64, data_block_count: u64) -> Self {
+        SuperBlock {
+            magic_number: MAGIC_NUMBER,
+            inode_count,
+            data_block_count,
+            ..Default::default()
+        }
+    }
+}
 
 bitflags! {
     #[derive(Serialize, Deserialize)]
@@ -85,6 +275,15 @@ pub enum Inode {
 
 const_assert!(inode; (size_of::<Inode>() as u64) <= INODE_SIZE);
 
+impl Inode {
+    pub fn init(inode_count: u64) -> Self {
+        Inode::FreeInode {
+            free_count: inode_count,
+            next_free: 0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct FreeDataBlock {
     pub free_count: u64,
@@ -92,12 +291,88 @@ pub struct FreeDataBlock {
 }
 
 pub union DataBlock {
-    _data: [u8; 4096],
-    _ptrs: [u64; 512],
-    _free: FreeDataBlock,
+    pub data: [u8; 4096],
+    pub ptrs: [u64; 512],
+    pub free: FreeDataBlock,
 }
 
 const_assert!(data_block; (size_of::<DataBlock>() as u64) <= BLOCK_SIZE);
+
+impl DataBlock {
+    pub fn init(data_block_count: u64) -> Self {
+        DataBlock {
+            free: FreeDataBlock {
+                free_count: data_block_count,
+                next_free: 0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Fail)]
+pub enum DonkeyFail {
+    #[fail(display = "OS error {}", e)]
+    OsError {
+        #[cause]
+        e: io::Error,
+    },
+    #[fail(display = "Error occurred when formatting: {}", e)]
+    FormatFail {
+        #[cause]
+        e: FormatFail,
+    },
+}
+
+impl From<io::Error> for DonkeyFail {
+    fn from(e: io::Error) -> DonkeyFail {
+        DonkeyFail::OsError { e }
+    }
+}
+
+impl From<FormatFail> for DonkeyFail {
+    fn from(e: FormatFail) -> DonkeyFail {
+        DonkeyFail::FormatFail { e }
+    }
+}
+
+#[derive(Debug, Fail)]
+pub enum FormatFail {
+    #[fail(display = "OS error {}", e)]
+    OsError {
+        #[cause]
+        e: io::Error,
+    },
+    #[fail(display = "Serializing error {}", e)]
+    SerializeBlockError {
+        #[cause]
+        e: bincode::Error,
+    },
+    #[fail(display = "Ioctl error {}", e)]
+    IoctlError {
+        #[cause]
+        e: nix::Error,
+    },
+    #[fail(display = "The device is not supported.")]
+    UnsupportedDeviceError,
+}
+
+impl From<io::Error> for FormatFail {
+    fn from(e: io::Error) -> FormatFail {
+        FormatFail::OsError { e }
+    }
+}
+
+impl From<bincode::Error> for FormatFail {
+    fn from(e: bincode::Error) -> FormatFail {
+        FormatFail::SerializeBlockError { e }
+    }
+}
+
+impl From<nix::Error> for FormatFail {
+    fn from(e: nix::Error) -> FormatFail {
+        FormatFail::IoctlError { e }
+    }
+}
 
 #[cfg(test)]
 mod tests {
