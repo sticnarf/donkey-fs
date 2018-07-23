@@ -4,6 +4,7 @@ extern crate serde_derive;
 extern crate bitflags;
 #[macro_use]
 extern crate static_assertions;
+#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate failure_derive;
@@ -39,22 +40,40 @@ pub struct Donkey {
 }
 
 impl Donkey {
-    pub fn create<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, DonkeyFail> {
-        let dev = OpenOptions::new().write(true).open(dev_path)?;
+    pub fn create<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, DonkeyError> {
+        let dev = OpenOptions::new().read(true).write(true).open(dev_path)?;
         Ok(DonkeyBuilder { dev })
     }
 }
 
 impl DonkeyBuilder {
-    pub fn open(self) -> Result<Donkey, DonkeyFail> {
-        unimplemented!()
+    fn read_super_block(&mut self) -> Result<SuperBlock, ReadBlockError> {
+        self.dev.seek(SeekFrom::Start(BOOT_BLOCK_SIZE))?;
+        let super_block: SuperBlock = bincode::deserialize_from(&mut self.dev)?;
+
+        // validate magic number
+        if super_block.magic_number != MAGIC_NUMBER {
+            Err(ReadBlockError::CorruptedBlockError(format_err!(
+                "Maybe this device is not using Donkey?"
+            )))
+        } else {
+            Ok(super_block)
+        }
+    }
+
+    pub fn open(mut self) -> Result<Donkey, DonkeyError> {
+        let super_block = self.read_super_block()?;
+        Ok(Donkey {
+            dev: self.dev,
+            super_block,
+        })
     }
 
     pub fn format(
         mut self,
         opts: &FormatOptions,
         log: Option<Logger>,
-    ) -> Result<Donkey, DonkeyFail> {
+    ) -> Result<Donkey, DonkeyError> {
         let dev_size = dev_size(&self.dev, log.clone())?;
         let inode_count = dev_size / opts.bytes_per_inode;
         let data_block_count =
@@ -83,7 +102,7 @@ impl DonkeyBuilder {
     }
 }
 
-fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), FormatFail> {
+fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), FormatError> {
     try_info!(log, "Making the boot block...");
     let boot_block = BootBlock::init();
     bincode::serialize_into(dev, &boot_block)?;
@@ -95,14 +114,14 @@ fn make_super_block(
     inode_count: u64,
     data_block_count: u64,
     log: Option<Logger>,
-) -> Result<(), FormatFail> {
+) -> Result<(), FormatError> {
     try_info!(log, "Making the super block...");
     let super_block = SuperBlock::init(inode_count, data_block_count);
     bincode::serialize_into(dev, &super_block)?;
     Ok(())
 }
 
-fn make_inodes(dev: &mut File, inode_count: u64, log: Option<Logger>) -> Result<(), FormatFail> {
+fn make_inodes(dev: &mut File, inode_count: u64, log: Option<Logger>) -> Result<(), FormatError> {
     try_info!(log, "Making inodes...");
     let init_inode = Inode::init(inode_count);
     bincode::serialize_into(dev, &init_inode)?;
@@ -113,7 +132,7 @@ fn make_data_blocks(
     dev: &mut File,
     data_block_count: u64,
     log: Option<Logger>,
-) -> Result<(), FormatFail> {
+) -> Result<(), FormatError> {
     try_info!(log, "Making data blocks...");
     let init_data_block = DataBlock::init(data_block_count);
     let free_data_block = unsafe { init_data_block.free };
@@ -121,7 +140,7 @@ fn make_data_blocks(
     Ok(())
 }
 
-fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, FormatFail> {
+fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, FormatError> {
     let metadata = dev.metadata()?;
     let file_type = metadata.file_type();
 
@@ -133,17 +152,17 @@ fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, FormatFail> {
         try_info!(log, "Block device detected.");
         block_dev_size(&dev, log)
     } else {
-        Err(FormatFail::UnsupportedDeviceError.into())
+        Err(FormatError::UnsupportedDeviceError.into())
     }
 }
 
 // #[cfg(target_os = "linux")]
-fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, FormatFail> {
+fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, FormatError> {
     use std::os::unix::io::{AsRawFd, RawFd};
     let fd = dev.as_raw_fd();
 
     #[cfg(target_os = "linux")]
-    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+    fn getsize(fd: RawFd) -> Result<u64, FormatError> {
         // https://github.com/torvalds/linux/blob/v4.17/include/uapi/linux/fs.h#L216
         ioctl_read!(getsize64, 0x12, 114, u64);
         let mut size: u64 = 0;
@@ -154,7 +173,7 @@ fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, FormatFail> {
     }
 
     #[cfg(target_os = "macos")]
-    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+    fn getsize(fd: RawFd) -> Result<u64, FormatError> {
         // https://github.com/apple/darwin-xnu/blob/xnu-4570.1.46/bsd/sys/disk.h#L203
         ioctl_read!(getblksize, b'd', 24, u32);
         ioctl_read!(getblkcount, b'd', 25, u64);
@@ -168,7 +187,7 @@ fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, FormatFail> {
     }
 
     #[cfg(target_os = "freebsd")]
-    fn getsize(fd: RawFd) -> Result<u64, FormatFail> {
+    fn getsize(fd: RawFd) -> Result<u64, FormatError> {
         // https://github.com/freebsd/freebsd/blob/stable/11/sys/sys/disk.h#L37
         ioctl_read!(getmediasize, b'd', 129, u64);
         let mut size: u64 = 0;
@@ -310,44 +329,83 @@ impl DataBlock {
 }
 
 #[derive(Debug, Fail)]
-pub enum DonkeyFail {
-    #[fail(display = "OS error {}", e)]
+pub enum DonkeyError {
+    #[fail(display = "OS error: {}", e)]
     OsError {
         #[cause]
         e: io::Error,
     },
-    #[fail(display = "Error occurred when formatting: {}", e)]
-    FormatFail {
+    #[fail(display = "Read block error: {}", e)]
+    ReadBlockError {
         #[cause]
-        e: FormatFail,
+        e: ReadBlockError,
+    },
+    #[fail(display = "Error occurred when formatting: {}", e)]
+    FormatError {
+        #[cause]
+        e: FormatError,
     },
 }
 
-impl From<io::Error> for DonkeyFail {
-    fn from(e: io::Error) -> DonkeyFail {
-        DonkeyFail::OsError { e }
+impl From<io::Error> for DonkeyError {
+    fn from(e: io::Error) -> DonkeyError {
+        DonkeyError::OsError { e }
     }
 }
 
-impl From<FormatFail> for DonkeyFail {
-    fn from(e: FormatFail) -> DonkeyFail {
-        DonkeyFail::FormatFail { e }
+impl From<ReadBlockError> for DonkeyError {
+    fn from(e: ReadBlockError) -> DonkeyError {
+        DonkeyError::ReadBlockError { e }
+    }
+}
+
+impl From<FormatError> for DonkeyError {
+    fn from(e: FormatError) -> DonkeyError {
+        DonkeyError::FormatError { e }
     }
 }
 
 #[derive(Debug, Fail)]
-pub enum FormatFail {
-    #[fail(display = "OS error {}", e)]
+pub enum ReadBlockError {
+    #[fail(display = "OS error, {}", e)]
     OsError {
         #[cause]
         e: io::Error,
     },
-    #[fail(display = "Serializing error {}", e)]
+    #[fail(display = "Deserialization error, {}", e)]
+    DeserializeBlockError {
+        #[cause]
+        e: bincode::Error,
+    },
+    #[fail(display = "Block is corrupted, {}", _0)]
+    CorruptedBlockError(failure::Error),
+}
+
+impl From<io::Error> for ReadBlockError {
+    fn from(e: io::Error) -> ReadBlockError {
+        ReadBlockError::OsError { e }
+    }
+}
+
+impl From<bincode::Error> for ReadBlockError {
+    fn from(e: bincode::Error) -> ReadBlockError {
+        ReadBlockError::DeserializeBlockError { e }
+    }
+}
+
+#[derive(Debug, Fail)]
+pub enum FormatError {
+    #[fail(display = "OS error, {}", e)]
+    OsError {
+        #[cause]
+        e: io::Error,
+    },
+    #[fail(display = "Serialization error, {}", e)]
     SerializeBlockError {
         #[cause]
         e: bincode::Error,
     },
-    #[fail(display = "Ioctl error {}", e)]
+    #[fail(display = "Ioctl error, {}", e)]
     IoctlError {
         #[cause]
         e: nix::Error,
@@ -356,21 +414,21 @@ pub enum FormatFail {
     UnsupportedDeviceError,
 }
 
-impl From<io::Error> for FormatFail {
-    fn from(e: io::Error) -> FormatFail {
-        FormatFail::OsError { e }
+impl From<io::Error> for FormatError {
+    fn from(e: io::Error) -> FormatError {
+        FormatError::OsError { e }
     }
 }
 
-impl From<bincode::Error> for FormatFail {
-    fn from(e: bincode::Error) -> FormatFail {
-        FormatFail::SerializeBlockError { e }
+impl From<bincode::Error> for FormatError {
+    fn from(e: bincode::Error) -> FormatError {
+        FormatError::SerializeBlockError { e }
     }
 }
 
-impl From<nix::Error> for FormatFail {
-    fn from(e: nix::Error) -> FormatFail {
-        FormatFail::IoctlError { e }
+impl From<nix::Error> for FormatError {
+    fn from(e: nix::Error) -> FormatError {
+        FormatError::IoctlError { e }
     }
 }
 
