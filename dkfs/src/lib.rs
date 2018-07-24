@@ -30,6 +30,7 @@ pub const INODE_SIZE: u64 = 256;
 pub const BLOCK_SIZE: u64 = 4096;
 pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 pub const DEFAULT_BYTES_PER_INODE_STR: &'static str = "16384";
+pub const INODE_START: u64 = 114514;
 
 pub struct DonkeyBuilder {
     dev: File,
@@ -51,8 +52,7 @@ impl Donkey {
     }
 
     fn read_inode(&mut self, inode_number: u64) -> Result<Inode, Error> {
-        let ptr = INODE_SIZE * inode_number + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE;
-        self.read_block(ptr)
+        self.read_block(inode_ptr(inode_number))
     }
 
     fn write_block<B: SerializableBlock>(&mut self, ptr: u64, block: &B) -> Result<(), Error> {
@@ -65,17 +65,17 @@ impl Donkey {
     }
 
     fn write_inode(&mut self, inode_number: u64, inode: &Inode) -> Result<(), Error> {
-        let ptr = INODE_SIZE * inode_number + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE;
-        self.write_block(ptr, inode)
+        self.write_block(inode_ptr(inode_number), inode)
     }
 
     fn allocate_inode(&mut self) -> Result<u64, Error> {
-        let free = self.super_block.free_inode;
-        let inode = self.read_inode(free)?;
+        let free_inode_number = self.super_block.free_inode;
+        let inode = self.read_inode(free_inode_number)?;
         match inode {
-            Inode::UsedInode { .. } => {
-                Err(format_err!("Expect inode {} to be free, but used.", free))
-            }
+            Inode::UsedInode { .. } => Err(format_err!(
+                "Expect inode {} to be free, but used.",
+                free_inode_number
+            )),
             Inode::FreeInode {
                 free_count,
                 next_free,
@@ -86,7 +86,7 @@ impl Donkey {
                         next_free,
                     };
 
-                    let new_inode_number = free + 1;
+                    let new_inode_number = free_inode_number + 1;
                     self.write_inode(new_inode_number, &new_inode)?;
                     self.super_block.free_inode = new_inode_number;
                 } else {
@@ -94,7 +94,7 @@ impl Donkey {
                 }
                 self.super_block.used_inode_count += 1;
                 self.write_super_block()?;
-                Ok(free)
+                Ok(free_inode_number)
             }
         }
     }
@@ -226,6 +226,10 @@ fn write_block<B: SerializableBlock>(dev: &mut File, ptr: u64, block: &B) -> Res
     dev.seek(SeekFrom::Start(ptr))?;
     bincode::serialize_into(dev, &block)?;
     Ok(())
+}
+
+fn inode_ptr(inode_number: u64) -> u64 {
+    INODE_SIZE * (inode_number - INODE_START) + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE
 }
 
 fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), Error> {
@@ -391,6 +395,7 @@ impl SuperBlock {
             magic_number: MAGIC_NUMBER,
             inode_count,
             data_block_count,
+            free_inode: INODE_START,
             free_block_ptr: BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE + INODE_SIZE * inode_count,
             ..Default::default()
         }
