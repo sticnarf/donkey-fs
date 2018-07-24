@@ -11,7 +11,7 @@ use slog::{Drain, Logger};
 fn main() {
     use clap::*;
 
-    let matches = App::new("mkdonkey")
+    let matches = App::new("mkdk")
         .version("0.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
         .about("Make a donkey filesystem")
