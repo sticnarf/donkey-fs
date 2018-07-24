@@ -39,6 +39,8 @@ fn main() {
 
     if let Err(e) = donkey {
         error!(log, "{}", e);
+    } else {
+        info!(log, "Done.");
     }
 }
 
