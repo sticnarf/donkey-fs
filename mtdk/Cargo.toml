@@ -1,0 +1,12 @@
+[package]
+name = "mtdk"
+version = "0.1.0"
+authors = ["Yilin Chen <sticnarf@gmail.com>"]
+
+[dependencies]
+dkfs = { path = "../dkfs" }
+fuse = "0.3.1"
+libc = "0.2"
+clap = "2.32.0"
+slog = "2.2.3"
+slog-term = "2.4.0"

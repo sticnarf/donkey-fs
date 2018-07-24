@@ -1,46 +1,52 @@
-#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate slog;
 extern crate dkfs;
+extern crate fuse;
 extern crate slog_term;
 
 use dkfs::*;
+use fuse::Filesystem;
 use slog::{Drain, Logger};
+use std::ffi::OsStr;
 
 fn main() {
     use clap::*;
 
-    let matches = App::new("mkdk")
+    let matches = App::new("mtdk")
         .version("0.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
-        .about("Make a donkey filesystem")
+        .about("Mount a donkey filesystem")
         .arg(
             Arg::with_name("device")
                 .help("Path to the device to be used")
                 .required(true),
         )
         .arg(
-            Arg::with_name("bytes-per-inode")
-                .help("Specify the bytes/inode ratio")
-                .short("i")
-                .takes_value(true)
-                .default_value(DEFAULT_BYTES_PER_INODE_STR),
+            Arg::with_name("dir")
+                .help("Path of the mount point")
+                .required(true),
         )
         .get_matches();
 
     let log = logger();
     let dev_path = matches.value_of("device").unwrap();
-    let bytes_per_inode =
-        value_t!(matches.value_of("bytes-per-inode"), u64).unwrap_or_else(|e| e.exit());
+    let dir = matches.value_of("dir").unwrap();
+    let options = ["-o", "fsname=donkey"]
+        .iter()
+        .map(|o| OsStr::new(o))
+        .collect::<Vec<&OsStr>>();
 
-    let opt = FormatOptions::new().bytes_per_inode(bytes_per_inode);
-    let donkey = Donkey::new(dev_path).and_then(|dk| dk.format(&opt, Some(log.clone())));
+    let res = Donkey::new(dev_path)
+        .and_then(|dk| dk.open())
+        .and_then(|dk| {
+            let fuse = DonkeyFuse { dk };
+            fuse::mount(fuse, &dir, &options)?;
+            Ok(())
+        });
 
-    if let Err(e) = donkey {
+    if let Err(e) = res {
         error!(log, "{}", e);
-    } else {
-        info!(log, "Done.");
     }
 }
 
@@ -51,3 +57,9 @@ fn logger() -> Logger {
 
     Logger::root(drain, o!())
 }
+
+struct DonkeyFuse {
+    dk: Donkey,
+}
+
+impl Filesystem for DonkeyFuse {}

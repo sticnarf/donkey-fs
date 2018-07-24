@@ -41,7 +41,7 @@ pub struct Donkey {
 }
 
 impl Donkey {
-    pub fn create<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, Error> {
+    pub fn new<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, Error> {
         let dev = OpenOptions::new().read(true).write(true).open(dev_path)?;
         Ok(DonkeyBuilder { dev })
     }
