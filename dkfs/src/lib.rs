@@ -17,6 +17,8 @@ extern crate slog_try;
 
 use failure::Error;
 use slog::Logger;
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::*;
 use std::io::{Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -39,12 +41,16 @@ pub struct DonkeyBuilder {
 pub struct Donkey {
     dev: File,
     super_block: SuperBlock,
+    file_handles: FileHandles,
 }
 
 impl Donkey {
-    pub fn new<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, Error> {
-        let dev = OpenOptions::new().read(true).write(true).open(dev_path)?;
-        Ok(DonkeyBuilder { dev })
+    fn new(dev: File, super_block: SuperBlock) -> Self {
+        Donkey {
+            dev,
+            super_block,
+            file_handles: FileHandles::new(),
+        }
     }
 
     fn read_block<B: DeserializableBlock>(&mut self, ptr: u64) -> Result<B, Error> {
@@ -137,17 +143,17 @@ impl Donkey {
         permission: FileMode,
         uid: u32,
         gid: u32,
-        link_count: u64,
+        nlink: u64,
     ) -> Result<u64, Error> {
-        let inode_ptr = self.allocate_inode()?;
+        let inode_number = self.allocate_inode()?;
         let time = SystemTime::now().into();
         let mode = FileMode::DIRECTORY | permission;
         let entries = [
-            DirectoryEntry::new(inode_ptr, "."),
+            DirectoryEntry::new(inode_number, "."),
             DirectoryEntry::new(parent_inode, ".."),
         ];
         let buf = bincode::serialize(&entries)?;
-        let mut inode = Inode::init_used(mode, uid, gid, link_count, time, buf.len() as u64);
+        let mut inode = Inode::init_used(mode, uid, gid, nlink, time, buf.len() as u64);
         let data_ptrs = self.write_data(&buf)?;
         if let Inode::UsedInode { ref mut ptrs, .. } = inode {
             if data_ptrs.len() <= 12 {
@@ -157,8 +163,8 @@ impl Donkey {
                 unimplemented!()
             }
         }
-        self.write_block(inode_ptr, &inode)?;
-        Ok(inode_ptr)
+        self.write_inode(inode_number, &inode)?;
+        Ok(inode_number)
     }
 
     fn create_root(&mut self, log: Option<Logger>) -> Result<(), Error> {
@@ -168,14 +174,73 @@ impl Donkey {
             | FileMode::GROUP_EXECUTE
             | FileMode::ANY_READ
             | FileMode::ANY_EXECUTE;
-        let root_inode = self.mkdir_raw(0, root_permission, 0, 0, 1)?;
+        // Here we assume INODE_START is the root inode number
+        let root_inode = self.mkdir_raw(INODE_START, root_permission, 0, 0, 1)?;
         self.super_block.root_inode = root_inode;
         self.write_super_block()?;
         Ok(())
     }
+
+    pub fn root_inode(&self) -> u64 {
+        self.super_block.root_inode
+    }
+
+    // Returns the file handle
+    pub fn open(&mut self, inode_number: u64) -> Result<u64, Error> {
+        let inode = self.read_inode(inode_number)?;
+        Ok(self.file_handles.add(inode))
+    }
+
+    pub fn close(&mut self, file_handle: u64) {
+        self.file_handles.remove(file_handle)
+    }
+
+    // returns entry and the new offset
+    pub fn read_dir(
+        &mut self,
+        file_handle: u64,
+        offset: u64,
+    ) -> Result<Option<(DirectoryEntry, u64)>, Error> {
+        let inode = self
+            .file_handles
+            .get(file_handle)
+            .ok_or(format_err!("Bad file handle."))?;
+
+        if offset < 12 * BLOCK_SIZE {
+            let block = match inode {
+                Inode::UsedInode {
+                    size_or_device,
+                    ptrs,
+                    ..
+                } => if offset >= *size_or_device {
+                    return Ok(None);
+                } else {
+                    ptrs.direct_ptrs[(offset / BLOCK_SIZE) as usize]
+                },
+                _ => return Err(format_err!("Bad inode")),
+            };
+            self.dev.seek(SeekFrom::Start(block + offset % BLOCK_SIZE))?;
+            let entry = bincode::deserialize_from(&mut self.dev)?;
+            let new_offset = offset + bincode::serialized_size(&entry)?;
+            Ok(Some((entry, new_offset)))
+        } else {
+            // Indirect pointer is not implemented
+            unimplemented!()
+        }
+    }
+
+    pub fn get_attr(&mut self, inode_number: u64) -> Result<FileAttr, Error> {
+        let inode = self.read_inode(inode_number)?;
+        FileAttr::from_inode(inode)
+    }
 }
 
 impl DonkeyBuilder {
+    pub fn new<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, Error> {
+        let dev = OpenOptions::new().read(true).write(true).open(dev_path)?;
+        Ok(DonkeyBuilder { dev })
+    }
+
     fn read_super_block(&mut self) -> Result<SuperBlock, Error> {
         let super_block: SuperBlock = read_block(&mut self.dev, BOOT_BLOCK_SIZE)?;
 
@@ -189,10 +254,7 @@ impl DonkeyBuilder {
 
     pub fn open(mut self) -> Result<Donkey, Error> {
         let super_block = self.read_super_block()?;
-        Ok(Donkey {
-            dev: self.dev,
-            super_block,
-        })
+        Ok(Donkey::new(self.dev, super_block))
     }
 
     pub fn format(mut self, opts: &FormatOptions, log: Option<Logger>) -> Result<Donkey, Error> {
@@ -213,6 +275,35 @@ impl DonkeyBuilder {
         let mut fs = self.open()?;
         fs.create_root(log.clone())?;
         Ok(fs)
+    }
+}
+
+struct FileHandles {
+    map: BTreeMap<u64, Inode>,
+    top: u64,
+}
+
+impl FileHandles {
+    fn new() -> Self {
+        FileHandles {
+            map: BTreeMap::new(),
+            top: 1,
+        }
+    }
+
+    fn add(&mut self, inode: Inode) -> u64 {
+        let top = self.top;
+        self.map.insert(top, inode);
+        self.top += 1;
+        top
+    }
+
+    fn get(&mut self, id: u64) -> Option<&mut Inode> {
+        self.map.get_mut(&id)
+    }
+
+    fn remove(&mut self, id: u64) {
+        self.map.remove(&id);
     }
 }
 
@@ -425,16 +516,42 @@ bitflags! {
     }
 }
 
+impl From<u64> for FileMode {
+    fn from(mode: u64) -> FileMode {
+        FileMode::from_bits_truncate(mode)
+    }
+}
+
+pub fn is_regular_file<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::REGULAR_FILE).is_empty()
+}
+
+pub fn is_directory<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::DIRECTORY).is_empty()
+}
+
+pub fn is_symbolic_link<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::SYMBOLIC_LINK).is_empty()
+}
+
+pub fn is_block_device<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::BLOCK_DEVICE).is_empty()
+}
+
+pub fn is_character_device<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::CHARACTER_DEVICE).is_empty()
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Default)]
-pub struct TimeSpec {
+pub struct Timespec {
     pub sec: i64,
     pub nsec: i64,
 }
 
-impl From<SystemTime> for TimeSpec {
+impl From<SystemTime> for Timespec {
     fn from(t: SystemTime) -> Self {
         let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap();
-        TimeSpec {
+        Timespec {
             sec: duration.as_secs() as i64,
             nsec: duration.subsec_nanos() as i64,
         }
@@ -451,10 +568,11 @@ enum Inode {
         mode: FileMode,
         uid: u32,
         gid: u32,
-        link_count: u64,
-        atime: TimeSpec,
-        mtime: TimeSpec,
-        ctime: TimeSpec,
+        nlink: u64,
+        atime: Timespec,
+        mtime: Timespec,
+        ctime: Timespec,
+        crtime: Timespec,
         // file size for regular file, device number for device
         size_or_device: u64,
         ptrs: InodePtrs,
@@ -484,18 +602,19 @@ impl Inode {
         mode: FileMode,
         uid: u32,
         gid: u32,
-        link_count: u64,
-        time: TimeSpec,
+        nlink: u64,
+        time: Timespec,
         size_or_device: u64,
     ) -> Self {
         Inode::UsedInode {
             mode,
             uid,
             gid,
-            link_count,
+            nlink,
             atime: time,
             mtime: time,
             ctime: time,
+            crtime: time,
             size_or_device,
             ptrs: Default::default(),
         }
@@ -518,21 +637,74 @@ impl FreeDataBlock {
 }
 
 #[derive(Serialize, Deserialize)]
-struct DirectoryEntry<'a> {
-    inode: u64,
-    filename: &'a str,
+pub struct DirectoryEntry {
+    pub inode: u64,
+    pub filename: OsString,
 }
 
-impl<'a> DirectoryEntry<'a> {
-    fn new(inode: u64, filename: &'a str) -> Self {
-        DirectoryEntry { inode, filename }
+impl DirectoryEntry {
+    fn new<T>(inode: u64, filename: T) -> Self
+    where
+        T: Into<OsString>,
+    {
+        DirectoryEntry {
+            inode,
+            filename: filename.into(),
+        }
+    }
+}
+
+pub struct FileAttr {
+    pub mode: FileMode,
+    pub size: u64,
+    pub atime: Timespec,
+    pub mtime: Timespec,
+    pub ctime: Timespec,
+    pub crtime: Timespec,
+    pub nlink: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub rdev: u64,
+}
+
+impl FileAttr {
+    fn from_inode(inode: Inode) -> Result<FileAttr, Error> {
+        match inode {
+            Inode::UsedInode {
+                mode,
+                uid,
+                gid,
+                nlink,
+                atime,
+                mtime,
+                ctime,
+                crtime,
+                size_or_device,
+                ..
+            } => {
+                let mut attr = FileAttr {
+                    mode,
+                    size: 0,
+                    atime,
+                    mtime,
+                    ctime,
+                    crtime,
+                    nlink,
+                    uid,
+                    gid,
+                    rdev: 0,
+                };
+                if is_block_device(mode) || is_character_device(mode) {
+                    attr.rdev = size_or_device;
+                } else {
+                    attr.size = size_or_device;
+                }
+                Ok(attr)
+            }
+            _ => Err(format_err!("Bad inode.")),
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod tests {}

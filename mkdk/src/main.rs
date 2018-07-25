@@ -35,7 +35,7 @@ fn main() {
         value_t!(matches.value_of("bytes-per-inode"), u64).unwrap_or_else(|e| e.exit());
 
     let opt = FormatOptions::new().bytes_per_inode(bytes_per_inode);
-    let donkey = Donkey::new(dev_path).and_then(|dk| dk.format(&opt, Some(log.clone())));
+    let donkey = DonkeyBuilder::new(dev_path).and_then(|dk| dk.format(&opt, Some(log.clone())));
 
     if let Err(e) = donkey {
         error!(log, "{}", e);
