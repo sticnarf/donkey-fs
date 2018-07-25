@@ -58,7 +58,7 @@ impl Donkey {
     }
 
     fn read_inode(&mut self, inode_number: u64) -> Result<Inode, Error> {
-        self.read_block(inode_ptr(inode_number))
+        self.read_block(inode_ptr(inode_number)?)
     }
 
     fn write_block<B: SerializableBlock>(&mut self, ptr: u64, block: &B) -> Result<(), Error> {
@@ -71,7 +71,7 @@ impl Donkey {
     }
 
     fn write_inode(&mut self, inode_number: u64, inode: &Inode) -> Result<(), Error> {
-        self.write_block(inode_ptr(inode_number), inode)
+        self.write_block(inode_ptr(inode_number)?, inode)
     }
 
     fn allocate_inode(&mut self) -> Result<u64, Error> {
@@ -319,8 +319,11 @@ fn write_block<B: SerializableBlock>(dev: &mut File, ptr: u64, block: &B) -> Res
     Ok(())
 }
 
-fn inode_ptr(inode_number: u64) -> u64 {
-    INODE_SIZE * (inode_number - INODE_START) + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE
+fn inode_ptr(inode_number: u64) -> Result<u64, Error> {
+    let offset = inode_number
+        .checked_sub(INODE_START)
+        .ok_or(format_err!("Inode number underflow!"))?;
+    Ok(INODE_SIZE * offset + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE)
 }
 
 fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), Error> {
