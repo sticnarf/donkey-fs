@@ -134,11 +134,12 @@ impl Donkey {
                     // Writing via a device inode is impossible
                     unreachable!()
                 } else {
-                    let mut block_index = (offset / BLOCK_SIZE) as usize;
+                    let block_left = (BLOCK_SIZE - offset % BLOCK_SIZE) as usize;
+                    let write_len = std::cmp::min(block_left, data.len());
+                    let mut block_index = offset / BLOCK_SIZE;
                     if block_index < 12 {
                         // direct pointer
-                        let block_left = (BLOCK_SIZE - offset % BLOCK_SIZE) as usize;
-                        let write_len = std::cmp::min(block_left, data.len());
+                        let block_index = block_index as usize;
                         if ptrs.direct_ptrs[block_index] == 0 {
                             // block is not allocated
                             ptrs.direct_ptrs[block_index] = self.allocate_block()?;
@@ -147,8 +148,31 @@ impl Donkey {
                         self.dev.seek(SeekFrom::Start(block))?;
                         self.dev.write_all(&data[..write_len])?;
                         write_len
-                    } else {
+                    } else if block_index < 12 + 512 {
                         // indirect pointer
+                        let indirect_index = block_index - 12;
+                        if ptrs.indirect_ptr == 0 {
+                            // indirect block is not allocated
+                            ptrs.indirect_ptr = self.allocate_block()?;
+                        }
+                        let indirect_ptr = ptrs.indirect_ptr + indirect_index;
+                        self.dev.seek(SeekFrom::Start(indirect_ptr))?;
+                        let mut data_ptr = bincode::deserialize_from(&mut self.dev)?;
+                        if data_ptr == 0 {
+                            data_ptr = self.allocate_block()?;
+                        }
+                        self.dev.seek(SeekFrom::Start(data_ptr))?;
+                        self.dev.write_all(&data[..write_len])?;
+                        write_len
+                    } else if block_index < 12 + 512 + 512 * 512 {
+                        // double indirect pointer
+                        unimplemented!()
+                    } else if block_index < 12 + 512 + 512 * 512 + 512 * 512 * 512 {
+                        // triple indirect pointer
+                        unimplemented!()
+                    } else {
+                        // Assuming file size does not exceed 256 TB
+                        // quadriple indirect pointer
                         unimplemented!()
                     }
                 }
