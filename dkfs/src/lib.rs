@@ -125,15 +125,41 @@ impl Donkey {
         Ok(free)
     }
 
-    fn write_data(&mut self, buf: &[u8]) -> Result<Vec<u64>, Error> {
-        buf.chunks(BLOCK_SIZE as usize)
-            .map(|chunk| {
-                let block = self.allocate_block()?;
-                self.dev.seek(SeekFrom::Start(block))?;
-                self.dev.write_all(chunk)?;
-                Ok(block)
-            })
-            .collect()
+    // This method does not modify the size in inode
+    fn write_to(&mut self, inode: &mut Inode, offset: u64, data: &[u8]) -> Result<(), Error> {
+        let written = match inode {
+            Inode::FreeInode { .. } => return Err(format_err!("Invalid inode.")),
+            Inode::UsedInode { mode, ptrs, .. } => {
+                if is_block_device(*mode) || is_character_device(*mode) {
+                    // Writing via a device inode is impossible
+                    unreachable!()
+                } else {
+                    let mut block_index = (offset / BLOCK_SIZE) as usize;
+                    if block_index < 12 {
+                        // direct pointer
+                        let block_left = (BLOCK_SIZE - offset % BLOCK_SIZE) as usize;
+                        let write_len = std::cmp::min(block_left, data.len());
+                        if ptrs.direct_ptrs[block_index] == 0 {
+                            // block is not allocated
+                            ptrs.direct_ptrs[block_index] = self.allocate_block()?;
+                        }
+                        let block = ptrs.direct_ptrs[block_index];
+                        self.dev.seek(SeekFrom::Start(block))?;
+                        self.dev.write_all(&data[..write_len])?;
+                        write_len
+                    } else {
+                        // indirect pointer
+                        unimplemented!()
+                    }
+                }
+            }
+        };
+        if written == data.len() {
+            // all data written
+            Ok(())
+        } else {
+            self.write_to(inode, offset + written as u64, &data[written..])
+        }
     }
 
     // Returns the inode number of the new directory
@@ -154,15 +180,7 @@ impl Donkey {
         ];
         let buf = bincode::serialize(&entries)?;
         let mut inode = Inode::init_used(mode, uid, gid, nlink, time, buf.len() as u64);
-        let data_ptrs = self.write_data(&buf)?;
-        if let Inode::UsedInode { ref mut ptrs, .. } = inode {
-            if data_ptrs.len() <= 12 {
-                ptrs.direct_ptrs[..data_ptrs.len()].copy_from_slice(&data_ptrs);
-            } else {
-                // Indirect pointers is not implemented yet
-                unimplemented!()
-            }
-        }
+        self.write_to(&mut inode, 0, &buf)?;
         self.write_inode(inode_number, &inode)?;
         Ok(inode_number)
     }
