@@ -166,6 +166,38 @@ impl Donkey {
         Ok(write_len)
     }
 
+    // If level is 0, then ptr is a direct pointer
+    // offset is counted from the beginning of ptr
+    // ptr must be the beginning of a block
+    fn read_via_indirect_ptr(
+        &mut self,
+        ptr: u64,
+        level: i32,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<u8>, Error> {
+        if ptr == 0 {
+            return Err(format_err!("Read through an invalid pointer."));
+        }
+        let block_offset = offset % BLOCK_SIZE;
+        let block_left = (BLOCK_SIZE - block_offset) as usize;
+        let read_size = std::cmp::min(block_left, limit);
+
+        if level == 0 {
+            let mut data = vec![0; read_size];
+            self.dev.seek(SeekFrom::Start(ptr + block_offset))?;
+            self.dev.read_exact(&mut data[..read_size])?;
+            Ok(data)
+        } else {
+            assert!(level > 0 && level <= 4);
+            let indirect_block_size = 512u64.pow((level - 1) as u32);
+            let block_index = offset / indirect_block_size;
+            self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
+            let next_ptr = bincode::deserialize_from(&mut self.dev)?;
+            self.read_via_indirect_ptr(next_ptr, level - 1, offset % indirect_block_size, limit)
+        }
+    }
+
     // Returns the inode number of the new directory
     fn mkdir_raw(
         &mut self,
@@ -186,10 +218,7 @@ impl Donkey {
         let buf = bincode::serialize(&entries)?;
         let mut inode = Inode::init_used(mode, uid, gid, nlink, time, buf.len() as u64);
         try_debug!(log, "directory: {:?}", buf);
-        if let Inode::UsedInode { ptrs, .. } = &mut inode {
-            let mut dkfile = DonkeyFile::new(self, ptrs).log(log);
-            dkfile.write_all(&buf)?;
-        }
+        DonkeyFile::new(self, &mut inode).log(log).write_all(&buf)?;
         self.write_inode(inode_number, &inode)?;
         Ok(inode_number)
     }
@@ -227,33 +256,20 @@ impl Donkey {
         &mut self,
         file_handle: u64,
         offset: u64,
+        log: Option<Logger>,
     ) -> Result<Option<(DirectoryEntry, u64)>, Error> {
-        let inode = self
+        let mut inode = self
             .file_handles
             .get(file_handle)
-            .ok_or(format_err!("Bad file handle."))?;
-
-        if offset < 12 * BLOCK_SIZE {
-            let block = match inode {
-                Inode::UsedInode {
-                    size_or_device,
-                    ptrs,
-                    ..
-                } => if offset >= *size_or_device {
-                    return Ok(None);
-                } else {
-                    ptrs.direct_ptrs[(offset / BLOCK_SIZE) as usize]
-                },
-                _ => return Err(format_err!("Bad inode")),
-            };
-            self.dev.seek(SeekFrom::Start(block + offset % BLOCK_SIZE))?;
-            let entry = bincode::deserialize_from(&mut self.dev)?;
-            let new_offset = offset + bincode::serialized_size(&entry)?;
-            Ok(Some((entry, new_offset)))
-        } else {
-            // Indirect pointer is not implemented
-            unimplemented!()
-        }
+            .ok_or(format_err!("Bad file handle."))?
+            .clone();
+        let entry = {
+            let mut dkfile = DonkeyFile::new(self, &mut inode).log(log);
+            dkfile.seek(SeekFrom::Start(offset))?;
+            bincode::deserialize_from(&mut dkfile)?
+        };
+        let new_offset = offset + bincode::serialized_size(&entry)?;
+        Ok(Some((entry, new_offset)))
     }
 
     pub fn get_attr(&mut self, inode_number: u64) -> Result<FileAttr, Error> {
@@ -336,16 +352,16 @@ impl FileHandles {
 
 struct DonkeyFile<'a> {
     dk: &'a mut Donkey,
-    ptrs: &'a mut InodePtrs,
+    inode: &'a mut Inode,
     offset: u64,
     log: Option<Logger>,
 }
 
 impl<'a> DonkeyFile<'a> {
-    fn new(dk: &'a mut Donkey, ptrs: &'a mut InodePtrs) -> Self {
+    fn new(dk: &'a mut Donkey, inode: &'a mut Inode) -> Self {
         DonkeyFile {
             dk,
-            ptrs,
+            inode,
             offset: 0,
             log: None,
         }
@@ -358,75 +374,148 @@ impl<'a> DonkeyFile<'a> {
 
     // This method does not modify the size in inode
     fn offset_write(&mut self, offset: u64, data: &[u8]) -> Result<usize, Error> {
-        let block_index = offset / BLOCK_SIZE;
-        let written = if block_index < 12 {
-            // direct pointer
-            let block_index = block_index as usize;
-            if self.ptrs.direct_ptrs[block_index] == 0 {
-                // block is not allocated
-                self.ptrs.direct_ptrs[block_index] = self.dk.allocate_block()?;
+        let written = match self.inode {
+            Inode::FreeInode { .. } => return Err(format_err!("Write through an empty inode.")),
+            Inode::UsedInode { mode, ptrs, .. } => {
+                if is_device(*mode) {
+                    // Impossible to write a device through filesystem
+                    unreachable!()
+                }
+                let block_index = offset / BLOCK_SIZE;
+                if block_index < 12 {
+                    // direct pointer
+                    let block_index = block_index as usize;
+                    if ptrs.direct_ptrs[block_index] == 0 {
+                        // block is not allocated
+                        ptrs.direct_ptrs[block_index] = self.dk.allocate_block()?;
+                    }
+                    self.dk.write_via_indirect_ptr(
+                        ptrs.direct_ptrs[block_index],
+                        0,
+                        offset % BLOCK_SIZE,
+                        data,
+                    )?
+                } else if block_index < 12 + 512 {
+                    // indirect pointer
+                    if ptrs.indirect_ptr == 0 {
+                        // indirect block is not allocated
+                        ptrs.indirect_ptr = self.dk.allocate_block()?;
+                    }
+                    self.dk.write_via_indirect_ptr(
+                        ptrs.indirect_ptr,
+                        1,
+                        offset - 12 * BLOCK_SIZE,
+                        data,
+                    )?
+                } else if block_index < 12 + 512 + 512 * 512 {
+                    // double indirect pointer
+                    if ptrs.double_indirect_ptr == 0 {
+                        // double indirect block is not allocated
+                        ptrs.double_indirect_ptr = self.dk.allocate_block()?;
+                    }
+                    self.dk.write_via_indirect_ptr(
+                        ptrs.double_indirect_ptr,
+                        2,
+                        offset - (12 + 512) * BLOCK_SIZE,
+                        data,
+                    )?
+                } else if block_index < 12 + 512 + 512 * 512 + 512 * 512 * 512 {
+                    // triple indirect pointer
+                    if ptrs.triple_indirect_ptr == 0 {
+                        // triple indirect block is not allocated
+                        ptrs.triple_indirect_ptr = self.dk.allocate_block()?;
+                    }
+                    self.dk.write_via_indirect_ptr(
+                        ptrs.triple_indirect_ptr,
+                        3,
+                        offset - (12 + 512 + 512 * 512) * BLOCK_SIZE,
+                        data,
+                    )?
+                } else {
+                    // Assuming file size does not exceed 256 TB
+                    // quadruple indirect pointer
+                    if ptrs.quadruple_indirect_ptr == 0 {
+                        // triple indirect block is not allocated
+                        ptrs.quadruple_indirect_ptr = self.dk.allocate_block()?;
+                    }
+                    self.dk.write_via_indirect_ptr(
+                        ptrs.quadruple_indirect_ptr,
+                        4,
+                        offset - (12 + 512 + 512 * 512 + 512 * 512 * 512) * BLOCK_SIZE,
+                        data,
+                    )?
+                }
             }
-            self.dk.write_via_indirect_ptr(
-                self.ptrs.direct_ptrs[block_index],
-                0,
-                offset % BLOCK_SIZE,
-                data,
-            )?
-        } else if block_index < 12 + 512 {
-            // indirect pointer
-            if self.ptrs.indirect_ptr == 0 {
-                // indirect block is not allocated
-                self.ptrs.indirect_ptr = self.dk.allocate_block()?;
-            }
-            self.dk.write_via_indirect_ptr(
-                self.ptrs.indirect_ptr,
-                1,
-                offset - 12 * BLOCK_SIZE,
-                data,
-            )?
-        } else if block_index < 12 + 512 + 512 * 512 {
-            // double indirect pointer
-            if self.ptrs.double_indirect_ptr == 0 {
-                // double indirect block is not allocated
-                self.ptrs.double_indirect_ptr = self.dk.allocate_block()?;
-            }
-            self.dk.write_via_indirect_ptr(
-                self.ptrs.double_indirect_ptr,
-                2,
-                offset - (12 + 512) * BLOCK_SIZE,
-                data,
-            )?
-        } else if block_index < 12 + 512 + 512 * 512 + 512 * 512 * 512 {
-            // triple indirect pointer
-            if self.ptrs.triple_indirect_ptr == 0 {
-                // triple indirect block is not allocated
-                self.ptrs.triple_indirect_ptr = self.dk.allocate_block()?;
-            }
-            self.dk.write_via_indirect_ptr(
-                self.ptrs.triple_indirect_ptr,
-                3,
-                offset - (12 + 512 + 512 * 512) * BLOCK_SIZE,
-                data,
-            )?
-        } else {
-            // Assuming file size does not exceed 256 TB
-            // quadruple indirect pointer
-            if self.ptrs.quadruple_indirect_ptr == 0 {
-                // triple indirect block is not allocated
-                self.ptrs.quadruple_indirect_ptr = self.dk.allocate_block()?;
-            }
-            self.dk.write_via_indirect_ptr(
-                self.ptrs.quadruple_indirect_ptr,
-                4,
-                offset - (12 + 512 + 512 * 512 + 512 * 512 * 512) * BLOCK_SIZE,
-                data,
-            )?
         };
         if written == data.len() {
             // all data written
             Ok(written)
         } else {
             Ok(written + self.offset_write(offset + written as u64, &data[written..])?)
+        }
+    }
+
+    fn offset_read(&mut self, offset: u64) -> Result<Vec<u8>, Error> {
+        match self.inode {
+            Inode::FreeInode { .. } => Err(format_err!("Read through an empty inode.")),
+            Inode::UsedInode {
+                mode,
+                size_or_device,
+                ptrs,
+                ..
+            } => {
+                if is_device(*mode) {
+                    // Impossible to read a device through filesystem
+                    unreachable!()
+                }
+                if offset >= *size_or_device {
+                    return Ok(Vec::new());
+                }
+                let limit = (*size_or_device - offset) as usize;
+                let block_index = offset / BLOCK_SIZE;
+                if block_index < 12 {
+                    // direct pointer
+                    self.dk.read_via_indirect_ptr(
+                        ptrs.direct_ptrs[block_index as usize],
+                        0,
+                        offset % BLOCK_SIZE,
+                        limit,
+                    )
+                } else if block_index < 12 + 512 {
+                    // indirect pointer
+                    self.dk.read_via_indirect_ptr(
+                        ptrs.indirect_ptr,
+                        1,
+                        offset - 12 * BLOCK_SIZE,
+                        limit,
+                    )
+                } else if block_index < 12 + 512 + 512 * 512 {
+                    // double indirect pointer
+                    self.dk.read_via_indirect_ptr(
+                        ptrs.double_indirect_ptr,
+                        2,
+                        offset - (12 + 512) * BLOCK_SIZE,
+                        limit,
+                    )
+                } else if block_index < 12 + 512 + 512 * 512 + 512 * 512 * 512 {
+                    // triple indirect pointer
+                    self.dk.read_via_indirect_ptr(
+                        ptrs.triple_indirect_ptr,
+                        3,
+                        offset - (12 + 512 + 512 * 512) * BLOCK_SIZE,
+                        limit,
+                    )
+                } else {
+                    // Assuming file size does not exceed 256 TB
+                    // quadruple indirect pointer
+                    self.dk.read_via_indirect_ptr(
+                        ptrs.quadruple_indirect_ptr,
+                        4,
+                        offset - (12 + 512 + 512 * 512 + 512 * 512 * 512) * BLOCK_SIZE,
+                        limit,
+                    )
+                }
+            }
         }
     }
 }
@@ -450,7 +539,14 @@ impl<'a> Write for DonkeyFile<'a> {
 
 impl<'a> Read for DonkeyFile<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        unimplemented!()
+        let offset = self.offset;
+        let read = self
+            .offset_read(offset)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        let len = std::cmp::min(buf.len(), read.len());
+        buf[..len].copy_from_slice(&read[..len]);
+        self.offset += len as u64;
+        Ok(len)
     }
 }
 
@@ -713,6 +809,11 @@ pub fn is_character_device<T: Into<FileMode>>(mode: T) -> bool {
     !(mode.into() & FileMode::CHARACTER_DEVICE).is_empty()
 }
 
+pub fn is_device<T: Into<FileMode>>(mode: T) -> bool {
+    let mode = mode.into();
+    is_block_device(mode) || is_character_device(mode)
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Default)]
 pub struct Timespec {
     pub sec: i64,
@@ -729,7 +830,7 @@ impl From<SystemTime> for Timespec {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 enum Inode {
     FreeInode {
         free_count: u64,
@@ -750,7 +851,7 @@ enum Inode {
     },
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 struct InodePtrs {
     direct_ptrs: [u64; 12],
     indirect_ptr: u64,

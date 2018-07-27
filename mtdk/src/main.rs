@@ -162,7 +162,9 @@ impl Filesystem for DonkeyFuse {
             "readdir, ino: {}, fh: {}, offset: {}", _ino, fh, offset
         );
         let mut offset = offset as u64;
-        while let Ok(Some((entry, new_offset))) = self.dk.read_dir(fh, offset) {
+        while let Ok(Some((entry, new_offset))) =
+            self.dk.read_dir(fh, offset, Some(self.log.clone()))
+        {
             offset = new_offset;
             match self.dk.get_attr(entry.inode) {
                 Ok(attr) => {
