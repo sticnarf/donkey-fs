@@ -217,7 +217,6 @@ impl Donkey {
         ];
         let buf = bincode::serialize(&entries)?;
         let mut inode = Inode::init_used(mode, uid, gid, nlink, time, buf.len() as u64);
-        try_debug!(log, "directory: {:?}", buf);
         DonkeyFile::new(self, &mut inode).log(log).write_all(&buf)?;
         self.write_inode(inode_number, &inode)?;
         Ok(inode_number)
@@ -377,8 +376,8 @@ impl<'a> DonkeyFile<'a> {
         let written = match self.inode {
             Inode::FreeInode { .. } => return Err(format_err!("Write through an empty inode.")),
             Inode::UsedInode { mode, ptrs, .. } => {
-                if is_device(*mode) {
-                    // Impossible to write a device through filesystem
+                if !is_managed(*mode) {
+                    // This file is not managed by the filesystem
                     unreachable!()
                 }
                 let block_index = offset / BLOCK_SIZE;
@@ -464,8 +463,8 @@ impl<'a> DonkeyFile<'a> {
                 ptrs,
                 ..
             } => {
-                if is_device(*mode) {
-                    // Impossible to read a device through filesystem
+                if !is_managed(*mode) {
+                    // This file is not managed by the filesystem
                     unreachable!()
                 }
                 if offset >= *size_or_device {
@@ -768,18 +767,20 @@ bitflags! {
         const SYMBOLIC_LINK    = 0b00100000_00000000;
         const BLOCK_DEVICE     = 0b00010000_00000000;
         const CHARACTER_DEVICE = 0b00001000_00000000;
-        const USER_READ        = 0b00000100_00000000;
-        const USER_WRITE       = 0b00000010_00000000;
-        const USER_EXECUTE     = 0b00000001_00000000;
-        const GROUP_READ       = 0b00000000_10000000;
-        const GROUP_WRIT       = 0b00000000_01000000;
-        const GROUP_EXECUTE    = 0b00000000_00100000;
-        const ANY_READ         = 0b00000000_00010000;
-        const ANY_WRITE        = 0b00000000_00001000;
-        const ANY_EXECUTE      = 0b00000000_00000100;
-        const USER_RWX         = 0b00000111_00000000;
-        const GROUP_RWX        = 0b00000000_11100000;
-        const ANY_RWX          = 0b00000000_00011100;
+        const NAMED_PIPE       = 0b00000100_00000000;
+        const SOCKET           = 0b00000010_00000000;
+        const USER_READ        = 0b00000001_00000000;
+        const USER_WRITE       = 0b00000000_10000000;
+        const USER_EXECUTE     = 0b00000000_01000000;
+        const GROUP_READ       = 0b00000000_00100000;
+        const GROUP_WRIT       = 0b00000000_00010000;
+        const GROUP_EXECUTE    = 0b00000000_00001000;
+        const ANY_READ         = 0b00000000_00000100;
+        const ANY_WRITE        = 0b00000000_00000010;
+        const ANY_EXECUTE      = 0b00000000_00000001;
+        const USER_RWX         = 0b00000001_11000000;
+        const GROUP_RWX        = 0b00000000_00111000;
+        const ANY_RWX          = 0b00000000_00000111;
     }
 }
 
@@ -801,6 +802,11 @@ pub fn is_symbolic_link<T: Into<FileMode>>(mode: T) -> bool {
     !(mode.into() & FileMode::SYMBOLIC_LINK).is_empty()
 }
 
+fn is_managed<T: Into<FileMode>>(mode: T) -> bool {
+    let mode = mode.into();
+    is_regular_file(mode) || is_directory(mode) || is_symbolic_link(mode)
+}
+
 pub fn is_block_device<T: Into<FileMode>>(mode: T) -> bool {
     !(mode.into() & FileMode::BLOCK_DEVICE).is_empty()
 }
@@ -812,6 +818,14 @@ pub fn is_character_device<T: Into<FileMode>>(mode: T) -> bool {
 pub fn is_device<T: Into<FileMode>>(mode: T) -> bool {
     let mode = mode.into();
     is_block_device(mode) || is_character_device(mode)
+}
+
+pub fn is_named_pipe<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::NAMED_PIPE).is_empty()
+}
+
+pub fn is_socket<T: Into<FileMode>>(mode: T) -> bool {
+    !(mode.into() & FileMode::SOCKET).is_empty()
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default)]

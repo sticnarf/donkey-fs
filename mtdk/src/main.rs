@@ -199,7 +199,7 @@ fn mode_to_filetype(mode: FileMode) -> FileType {
 }
 
 fn mode_to_permission(mode: FileMode) -> u16 {
-    0o777 & (mode.bits() >> 2) as u16
+    0o777 & mode.bits() as u16
 }
 
 fn convert_timespec(t: dkfs::Timespec) -> time::Timespec {
