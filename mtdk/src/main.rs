@@ -37,7 +37,7 @@ fn main() {
     let log = logger();
     let dev_path = matches.value_of("device").unwrap();
     let dir = matches.value_of("dir").unwrap();
-    let options = ["-o", "fsname=donkey"]
+    let options = ["-o", "fsname=donkey", "-o", "allow_other"]
         .iter()
         .map(|o| OsStr::new(o))
         .collect::<Vec<&OsStr>>();
@@ -134,6 +134,14 @@ impl Filesystem for DonkeyFuse {
                 reply.error(libc::ENOENT)
             }
         }
+    }
+
+    fn open(&mut self, _req: &Request, mut ino: u64, _flags: u32, reply: ReplyOpen) {
+        if ino == FUSE_ROOT_ID {
+            ino = self.dk.root_inode();
+        }
+
+        debug!(self.log, "open, inode: {}", ino);
     }
 
     fn read(
