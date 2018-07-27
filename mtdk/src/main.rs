@@ -2,12 +2,15 @@ extern crate clap;
 #[macro_use]
 extern crate slog;
 extern crate dkfs;
+#[macro_use]
+extern crate failure;
 extern crate fuse;
 extern crate libc;
 extern crate slog_term;
 extern crate time;
 
 use dkfs::*;
+use failure::Error;
 use fuse::*;
 use slog::{Drain, Logger};
 use std::ffi::OsStr;
@@ -71,13 +74,48 @@ struct DonkeyFuse {
 const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
 
 impl Filesystem for DonkeyFuse {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, _req: &Request, mut parent: u64, name: &OsStr, reply: ReplyEntry) {
+        if parent == FUSE_ROOT_ID {
+            parent = self.dk.root_inode();
+        }
+
         debug!(
             self.log,
             "lookup, parent: {}, name: {}",
             parent,
             name.to_str().unwrap_or("not valid string")
         );
+
+        fn real_lookup(
+            dk: &mut Donkey,
+            parent: u64,
+            name: &OsStr,
+            log: Logger,
+        ) -> Result<fuse::FileAttr, Error> {
+            let fh = dk.open(parent)?;
+            debug!(log, "opened {}, fh: {}", parent, fh);
+
+            let mut offset = 0;
+            loop {
+                let result = dk.read_dir(fh, offset, Some(log.clone()))?;
+                if let Some((entry, new_offset)) = result {
+                    if entry.filename == name {
+                        let attr = dk.get_attr(entry.inode)?;
+                        return Ok(convert_attr(attr, entry.inode));
+                    }
+                    offset = new_offset;
+                } else {
+                    return Err(format_err!("Cannot find file"));
+                }
+            }
+        }
+
+        if let Ok(attr) = real_lookup(&mut self.dk, parent, name, self.log.clone()) {
+            // TODO: (inode, generation) should be unique
+            reply.entry(&TTL, &attr, 0);
+        } else {
+            reply.error(libc::ENOENT);
+        }
     }
 
     fn getattr(&mut self, _req: &Request, mut ino: u64, reply: ReplyAttr) {
@@ -88,22 +126,7 @@ impl Filesystem for DonkeyFuse {
         debug!(self.log, "getattr, inode: {}", ino);
         match self.dk.get_attr(ino) {
             Ok(attr) => {
-                let fuse_attr = fuse::FileAttr {
-                    ino,
-                    size: attr.size,
-                    blocks: (attr.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                    atime: convert_timespec(attr.atime),
-                    mtime: convert_timespec(attr.mtime),
-                    ctime: convert_timespec(attr.ctime),
-                    crtime: convert_timespec(attr.crtime),
-                    kind: mode_to_filetype(attr.mode),
-                    perm: mode_to_permission(attr.mode),
-                    nlink: attr.nlink as u32,
-                    uid: attr.uid,
-                    gid: attr.gid,
-                    rdev: attr.rdev as u32,
-                    flags: 0,
-                };
+                let fuse_attr = convert_attr(attr, ino);
                 reply.attr(&TTL, &fuse_attr)
             }
             Err(e) => {
@@ -138,7 +161,7 @@ impl Filesystem for DonkeyFuse {
 
         match self.dk.open(ino) {
             Ok(fh) => {
-                debug!(self.log, "opened, fh: {}", fh);
+                debug!(self.log, "opened {}, fh: {}", ino, fh);
                 reply.opened(fh, 0)
             }
             Err(_) => {
@@ -212,5 +235,24 @@ fn convert_timespec(t: dkfs::Timespec) -> time::Timespec {
     time::Timespec {
         sec: t.sec,
         nsec: t.nsec as i32,
+    }
+}
+
+fn convert_attr(attr: dkfs::FileAttr, ino: u64) -> fuse::FileAttr {
+    fuse::FileAttr {
+        ino,
+        size: attr.size,
+        blocks: (attr.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
+        atime: convert_timespec(attr.atime),
+        mtime: convert_timespec(attr.mtime),
+        ctime: convert_timespec(attr.ctime),
+        crtime: convert_timespec(attr.crtime),
+        kind: mode_to_filetype(attr.mode),
+        perm: mode_to_permission(attr.mode),
+        nlink: attr.nlink as u32,
+        uid: attr.uid,
+        gid: attr.gid,
+        rdev: attr.rdev as u32,
+        flags: 0,
     }
 }

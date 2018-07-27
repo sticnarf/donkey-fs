@@ -262,6 +262,12 @@ impl Donkey {
             .get(file_handle)
             .ok_or(format_err!("Bad file handle."))?
             .clone();
+        if let Inode::UsedInode { size_or_device, .. } = &inode {
+            if offset >= *size_or_device {
+                return Ok(None);
+            }
+        }
+
         let entry = {
             let mut dkfile = DonkeyFile::new(self, &mut inode).log(log);
             dkfile.seek(SeekFrom::Start(offset))?;
