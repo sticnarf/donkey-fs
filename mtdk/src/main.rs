@@ -72,7 +72,7 @@ const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
 
 impl Filesystem for DonkeyFuse {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        info!(
+        debug!(
             self.log,
             "lookup, parent: {}, name: {}",
             parent,
@@ -85,7 +85,7 @@ impl Filesystem for DonkeyFuse {
             ino = self.dk.root_inode();
         }
 
-        info!(self.log, "getattr, inode: {}", ino);
+        debug!(self.log, "getattr, inode: {}", ino);
         match self.dk.get_attr(ino) {
             Ok(attr) => {
                 let fuse_attr = fuse::FileAttr {
@@ -104,7 +104,6 @@ impl Filesystem for DonkeyFuse {
                     rdev: attr.rdev as u32,
                     flags: 0,
                 };
-                info!(self.log, "file attr: {:?}", fuse_attr);
                 reply.attr(&TTL, &fuse_attr)
             }
             Err(e) => {
@@ -131,7 +130,7 @@ impl Filesystem for DonkeyFuse {
     }
 
     fn opendir(&mut self, _req: &Request, mut ino: u64, _flags: u32, reply: ReplyOpen) {
-        info!(self.log, "opendir, ino: {}", ino);
+        debug!(self.log, "opendir, ino: {}", ino);
 
         if ino == FUSE_ROOT_ID {
             ino = self.dk.root_inode();
@@ -139,7 +138,7 @@ impl Filesystem for DonkeyFuse {
 
         match self.dk.open(ino) {
             Ok(fh) => {
-                info!(self.log, "opened, fh: {}", fh);
+                debug!(self.log, "opened, fh: {}", fh);
                 reply.opened(fh, 0)
             }
             Err(_) => {
@@ -157,7 +156,7 @@ impl Filesystem for DonkeyFuse {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        info!(
+        debug!(
             self.log,
             "readdir, ino: {}, fh: {}, offset: {}", _ino, fh, offset
         );
@@ -185,6 +184,13 @@ impl Filesystem for DonkeyFuse {
             }
         }
         reply.ok()
+    }
+
+    fn releasedir(&mut self, _req: &Request, _ino: u64, fh: u64, _flags: u32, reply: ReplyEmpty) {
+        debug!(self.log, "releasedir, fh: {}", fh);
+
+        self.dk.close(fh);
+        reply.ok();
     }
 }
 
