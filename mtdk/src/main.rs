@@ -13,6 +13,7 @@ use dkfs::*;
 use failure::Error;
 use fuse::*;
 use slog::{Drain, Logger};
+use std::cell::Cell;
 use std::ffi::OsStr;
 
 fn main() {
@@ -111,8 +112,7 @@ impl Filesystem for DonkeyFuse {
         }
 
         if let Ok(attr) = real_lookup(&mut self.dk, parent, name, self.log.clone()) {
-            // TODO: (inode, generation) should be unique
-            reply.entry(&TTL, &attr, 0);
+            reply.entry(&TTL, &attr, get_generation());
         } else {
             reply.error(libc::ENOENT);
         }
@@ -263,4 +263,18 @@ fn convert_attr(attr: dkfs::FileAttr, ino: u64) -> fuse::FileAttr {
         rdev: attr.rdev as u32,
         flags: 0,
     }
+}
+
+thread_local!(static GENERATION: Cell<(i64, u64)> = Cell::new((0,0)));
+
+// Generate a unique value for NFS generation
+// https://libfuse.github.io/doxygen/structfuse__entry__param.html
+fn get_generation() -> u64 {
+    GENERATION.with(|cell| {
+        let (t, g) = cell.get();
+        let new_t = time::now().to_timespec().sec;
+        let new_g = if t == new_t { g + 1 } else { 1 };
+        cell.set((new_t, new_g));
+        (new_t as u64) << 26 + new_g
+    })
 }
