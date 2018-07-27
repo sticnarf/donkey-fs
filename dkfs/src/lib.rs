@@ -125,6 +125,47 @@ impl Donkey {
         Ok(free)
     }
 
+    // If level is 0, then ptr is a direct pointer
+    // offset is counted from the beginning of ptr
+    // ptr must be the beginning of a block
+    // This method returns how many bytes is written
+    fn write_via_indirect_ptr(
+        &mut self,
+        ptr: u64,
+        level: i32,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<usize, Error> {
+        assert!(ptr != 0); // Block must be already allocated
+        let block_offset = offset % BLOCK_SIZE;
+        let block_left = (BLOCK_SIZE - block_offset) as usize;
+        let write_len = std::cmp::min(block_left, data.len());
+
+        if level == 0 {
+            self.dev.seek(SeekFrom::Start(ptr + block_offset))?;
+            self.dev.write_all(&data[..write_len])?;
+        } else {
+            assert!(level > 0 && level <= 4);
+            let indirect_block_size = 512u64.pow((level - 1) as u32);
+            let block_index = offset / indirect_block_size;
+            self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
+            let mut next_ptr = bincode::deserialize_from(&mut self.dev)?;
+            if next_ptr == 0 {
+                next_ptr = self.allocate_block()?;
+                self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
+                bincode::serialize_into(&mut self.dev, &next_ptr)?;
+            }
+            self.write_via_indirect_ptr(
+                next_ptr,
+                level - 1,
+                offset % indirect_block_size,
+                &data[..],
+            )?;
+        }
+
+        Ok(write_len)
+    }
+
     // This method does not modify the size in inode
     fn write_to(&mut self, inode: &mut Inode, offset: u64, data: &[u8]) -> Result<(), Error> {
         let written = match inode {
@@ -134,8 +175,6 @@ impl Donkey {
                     // Writing via a device inode is impossible
                     unreachable!()
                 } else {
-                    let block_left = (BLOCK_SIZE - offset % BLOCK_SIZE) as usize;
-                    let write_len = std::cmp::min(block_left, data.len());
                     let mut block_index = offset / BLOCK_SIZE;
                     if block_index < 12 {
                         // direct pointer
@@ -144,36 +183,61 @@ impl Donkey {
                             // block is not allocated
                             ptrs.direct_ptrs[block_index] = self.allocate_block()?;
                         }
-                        let block = ptrs.direct_ptrs[block_index];
-                        self.dev.seek(SeekFrom::Start(block))?;
-                        self.dev.write_all(&data[..write_len])?;
-                        write_len
+                        self.write_via_indirect_ptr(
+                            ptrs.direct_ptrs[block_index],
+                            0,
+                            offset % BLOCK_SIZE,
+                            data,
+                        )?
                     } else if block_index < 12 + 512 {
                         // indirect pointer
-                        let indirect_index = block_index - 12;
                         if ptrs.indirect_ptr == 0 {
                             // indirect block is not allocated
                             ptrs.indirect_ptr = self.allocate_block()?;
                         }
-                        let indirect_ptr = ptrs.indirect_ptr + indirect_index;
-                        self.dev.seek(SeekFrom::Start(indirect_ptr))?;
-                        let mut data_ptr = bincode::deserialize_from(&mut self.dev)?;
-                        if data_ptr == 0 {
-                            data_ptr = self.allocate_block()?;
-                        }
-                        self.dev.seek(SeekFrom::Start(data_ptr))?;
-                        self.dev.write_all(&data[..write_len])?;
-                        write_len
+                        self.write_via_indirect_ptr(
+                            ptrs.indirect_ptr,
+                            1,
+                            offset - 12 * BLOCK_SIZE,
+                            data,
+                        )?
                     } else if block_index < 12 + 512 + 512 * 512 {
                         // double indirect pointer
-                        unimplemented!()
+                        if ptrs.double_indirect_ptr == 0 {
+                            // double indirect block is not allocated
+                            ptrs.double_indirect_ptr = self.allocate_block()?;
+                        }
+                        self.write_via_indirect_ptr(
+                            ptrs.double_indirect_ptr,
+                            2,
+                            offset - (12 + 512) * BLOCK_SIZE,
+                            data,
+                        )?
                     } else if block_index < 12 + 512 + 512 * 512 + 512 * 512 * 512 {
                         // triple indirect pointer
-                        unimplemented!()
+                        if ptrs.triple_indirect_ptr == 0 {
+                            // triple indirect block is not allocated
+                            ptrs.triple_indirect_ptr = self.allocate_block()?;
+                        }
+                        self.write_via_indirect_ptr(
+                            ptrs.triple_indirect_ptr,
+                            3,
+                            offset - (12 + 512 + 512 * 512) * BLOCK_SIZE,
+                            data,
+                        )?
                     } else {
                         // Assuming file size does not exceed 256 TB
-                        // quadriple indirect pointer
-                        unimplemented!()
+                        // quadruple indirect pointer
+                        if ptrs.quadruple_indirect_ptr == 0 {
+                            // triple indirect block is not allocated
+                            ptrs.quadruple_indirect_ptr = self.allocate_block()?;
+                        }
+                        self.write_via_indirect_ptr(
+                            ptrs.quadruple_indirect_ptr,
+                            4,
+                            offset - (12 + 512 + 512 * 512 + 512 * 512 * 512) * BLOCK_SIZE,
+                            data,
+                        )?
                     }
                 }
             }
