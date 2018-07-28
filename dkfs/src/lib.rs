@@ -23,6 +23,8 @@ use std::fs::*;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
@@ -34,47 +36,136 @@ pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 pub const DEFAULT_BYTES_PER_INODE_STR: &'static str = "16384";
 pub const INODE_START: u64 = 114514;
 
+type Result<T> = std::result::Result<T, Error>;
+
 pub struct DonkeyBuilder {
     dev: File,
 }
 
+#[derive(Clone)]
 pub struct Donkey {
+    inner: Arc<Mutex<InnerDonkey>>,
+}
+
+impl Donkey {
+    fn new(inner: InnerDonkey) -> Donkey {
+        Donkey {
+            inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+}
+
+// TODO?
+// If mutex is poisoned, the program panics.
+impl Donkey {
+    fn lock(&self) -> MutexGuard<InnerDonkey> {
+        self.inner.lock().unwrap()
+    }
+
+    pub fn root_inode(&self) -> u64 {
+        let inner = self.lock();
+        inner.super_block.root_inode
+    }
+
+    // Returns the file handle
+    pub fn open(&mut self, inode_number: u64) -> Result<u64> {
+        let mut inner = self.lock();
+        let inode = inner.read_inode(inode_number)?;
+        Ok(inner.file_handles.add(inode))
+    }
+
+    pub fn close(&mut self, file_handle: u64) {
+        let mut inner = self.lock();
+        inner.file_handles.remove(file_handle)
+    }
+
+    // returns entry and the new offset
+    pub fn read_dir(
+        &mut self,
+        file_handle: u64,
+        offset: u64,
+        log: Option<Logger>,
+    ) -> Result<Option<(DirectoryEntry, u64)>> {
+        let mut inner = self.lock();
+        let mut inode = inner
+            .file_handles
+            .get(file_handle)
+            .ok_or(format_err!("Bad file handle."))?
+            .clone();
+        if let Inode::UsedInode { size_or_device, .. } = &inode {
+            if offset >= *size_or_device {
+                return Ok(None);
+            }
+        }
+
+        let entry = {
+            let mut dkfile = DonkeyFile::new(&mut inner, &mut inode).log(log);
+            dkfile.seek(SeekFrom::Start(offset))?;
+            bincode::deserialize_from(&mut dkfile)?
+        };
+        let new_offset = offset + bincode::serialized_size(&entry)?;
+        Ok(Some((entry, new_offset)))
+    }
+
+    pub fn get_attr(&mut self, inode_number: u64) -> Result<FileAttr> {
+        let mut inner = self.lock();
+        let inode = inner.read_inode(inode_number)?;
+        FileAttr::from_inode(inode)
+    }
+
+    fn create_root(&mut self, log: Option<Logger>) -> Result<()> {
+        try_info!(log, "Creating root directory...");
+        let mut inner = self.lock();
+        let root_permission = FileMode::USER_RWX
+            | FileMode::GROUP_READ
+            | FileMode::GROUP_EXECUTE
+            | FileMode::OTHERS_READ
+            | FileMode::OTHERS_EXECUTE;
+        // Here we assume INODE_START is the root inode number
+        let root_inode = inner.mkdir_raw(INODE_START, root_permission, 0, 0, log)?;
+        inner.super_block.root_inode = root_inode;
+        inner.write_super_block()?;
+        Ok(())
+    }
+}
+
+pub struct InnerDonkey {
     dev: File,
     super_block: SuperBlock,
     file_handles: FileHandles,
 }
 
-impl Donkey {
+impl InnerDonkey {
     fn new(dev: File, super_block: SuperBlock) -> Self {
-        Donkey {
+        InnerDonkey {
             dev,
             super_block,
             file_handles: FileHandles::new(),
         }
     }
 
-    fn read_block<B: DeserializableBlock>(&mut self, ptr: u64) -> Result<B, Error> {
+    fn read_block<B: DeserializableBlock>(&mut self, ptr: u64) -> Result<B> {
         read_block(&mut self.dev, ptr)
     }
 
-    fn read_inode(&mut self, inode_number: u64) -> Result<Inode, Error> {
+    fn read_inode(&mut self, inode_number: u64) -> Result<Inode> {
         self.read_block(inode_ptr(inode_number)?)
     }
 
-    fn write_block<B: SerializableBlock>(&mut self, ptr: u64, block: &B) -> Result<(), Error> {
+    fn write_block<B: SerializableBlock>(&mut self, ptr: u64, block: &B) -> Result<()> {
         write_block(&mut self.dev, ptr, block)
     }
 
-    fn write_super_block(&mut self) -> Result<(), Error> {
+    fn write_super_block(&mut self) -> Result<()> {
         let super_block = self.super_block.clone();
         self.write_block(BOOT_BLOCK_SIZE, &super_block)
     }
 
-    fn write_inode(&mut self, inode_number: u64, inode: &Inode) -> Result<(), Error> {
+    fn write_inode(&mut self, inode_number: u64, inode: &Inode) -> Result<()> {
         self.write_block(inode_ptr(inode_number)?, inode)
     }
 
-    fn allocate_inode(&mut self) -> Result<u64, Error> {
+    fn allocate_inode(&mut self) -> Result<u64> {
         let free_inode_number = self.super_block.free_inode;
         let inode = self.read_inode(free_inode_number)?;
         match inode {
@@ -105,7 +196,7 @@ impl Donkey {
         }
     }
 
-    fn allocate_block(&mut self) -> Result<u64, Error> {
+    fn allocate_block(&mut self) -> Result<u64> {
         let free = self.super_block.free_block_ptr;
         let data: FreeDataBlock = self.read_block(free)?;
         if data.free_count > 1 {
@@ -135,7 +226,7 @@ impl Donkey {
         level: i32,
         offset: u64,
         data: &[u8],
-    ) -> Result<usize, Error> {
+    ) -> Result<usize> {
         assert!(ptr != 0); // Block must be already allocated
         let block_offset = offset % BLOCK_SIZE;
         let block_left = (BLOCK_SIZE - block_offset) as usize;
@@ -175,7 +266,7 @@ impl Donkey {
         level: i32,
         offset: u64,
         limit: usize,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<Vec<u8>> {
         if ptr == 0 {
             return Err(format_err!("Read through an invalid pointer."));
         }
@@ -206,7 +297,7 @@ impl Donkey {
         gid: u32,
         nlink: u64,
         _log: Option<Logger>,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64> {
         let inode_number = self.allocate_inode()?;
         let time = SystemTime::now().into();
         let inode = Inode::init_used(mode, uid, gid, nlink, time, 0);
@@ -223,7 +314,7 @@ impl Donkey {
         uid: u32,
         gid: u32,
         log: Option<Logger>,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64> {
         let mode = FileMode::DIRECTORY | permission;
         let inode_number = self.mknod_raw(mode, uid, gid, 1, log.clone())?;
         let entries = [
@@ -236,75 +327,15 @@ impl Donkey {
         self.write_inode(inode_number, &inode)?;
         Ok(inode_number)
     }
-
-    fn create_root(&mut self, log: Option<Logger>) -> Result<(), Error> {
-        try_info!(log, "Creating root directory...");
-        let root_permission = FileMode::USER_RWX
-            | FileMode::GROUP_READ
-            | FileMode::GROUP_EXECUTE
-            | FileMode::OTHERS_READ
-            | FileMode::OTHERS_EXECUTE;
-        // Here we assume INODE_START is the root inode number
-        let root_inode = self.mkdir_raw(INODE_START, root_permission, 0, 0, log)?;
-        self.super_block.root_inode = root_inode;
-        self.write_super_block()?;
-        Ok(())
-    }
-
-    pub fn root_inode(&self) -> u64 {
-        self.super_block.root_inode
-    }
-
-    // Returns the file handle
-    pub fn open(&mut self, inode_number: u64) -> Result<u64, Error> {
-        let inode = self.read_inode(inode_number)?;
-        Ok(self.file_handles.add(inode))
-    }
-
-    pub fn close(&mut self, file_handle: u64) {
-        self.file_handles.remove(file_handle)
-    }
-
-    // returns entry and the new offset
-    pub fn read_dir(
-        &mut self,
-        file_handle: u64,
-        offset: u64,
-        log: Option<Logger>,
-    ) -> Result<Option<(DirectoryEntry, u64)>, Error> {
-        let mut inode = self
-            .file_handles
-            .get(file_handle)
-            .ok_or(format_err!("Bad file handle."))?
-            .clone();
-        if let Inode::UsedInode { size_or_device, .. } = &inode {
-            if offset >= *size_or_device {
-                return Ok(None);
-            }
-        }
-
-        let entry = {
-            let mut dkfile = DonkeyFile::new(self, &mut inode).log(log);
-            dkfile.seek(SeekFrom::Start(offset))?;
-            bincode::deserialize_from(&mut dkfile)?
-        };
-        let new_offset = offset + bincode::serialized_size(&entry)?;
-        Ok(Some((entry, new_offset)))
-    }
-
-    pub fn get_attr(&mut self, inode_number: u64) -> Result<FileAttr, Error> {
-        let inode = self.read_inode(inode_number)?;
-        FileAttr::from_inode(inode)
-    }
 }
 
 impl DonkeyBuilder {
-    pub fn new<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder, Error> {
+    pub fn new<P: AsRef<Path>>(dev_path: P) -> Result<DonkeyBuilder> {
         let dev = OpenOptions::new().read(true).write(true).open(dev_path)?;
         Ok(DonkeyBuilder { dev })
     }
 
-    fn read_super_block(&mut self) -> Result<SuperBlock, Error> {
+    fn read_super_block(&mut self) -> Result<SuperBlock> {
         let super_block: SuperBlock = read_block(&mut self.dev, BOOT_BLOCK_SIZE)?;
 
         // validate magic number
@@ -315,12 +346,12 @@ impl DonkeyBuilder {
         }
     }
 
-    pub fn open(mut self) -> Result<Donkey, Error> {
+    pub fn open(mut self) -> Result<Donkey> {
         let super_block = self.read_super_block()?;
-        Ok(Donkey::new(self.dev, super_block))
+        Ok(Donkey::new(InnerDonkey::new(self.dev, super_block)))
     }
 
-    pub fn format(mut self, opts: &FormatOptions, log: Option<Logger>) -> Result<Donkey, Error> {
+    pub fn format(mut self, opts: &FormatOptions, log: Option<Logger>) -> Result<Donkey> {
         let dev_size = dev_size(&self.dev, log.clone())?;
         let inode_count = dev_size / opts.bytes_per_inode;
         let data_block_count =
@@ -371,14 +402,14 @@ impl FileHandles {
 }
 
 struct DonkeyFile<'a> {
-    dk: &'a mut Donkey,
+    dk: &'a mut InnerDonkey,
     inode: &'a mut Inode,
     offset: u64,
     log: Option<Logger>,
 }
 
 impl<'a> DonkeyFile<'a> {
-    fn new(dk: &'a mut Donkey, inode: &'a mut Inode) -> Self {
+    fn new(dk: &'a mut InnerDonkey, inode: &'a mut Inode) -> Self {
         DonkeyFile {
             dk,
             inode,
@@ -393,7 +424,7 @@ impl<'a> DonkeyFile<'a> {
     }
 
     // This method does not modify the size in inode
-    fn offset_write(&mut self, offset: u64, data: &[u8]) -> Result<usize, Error> {
+    fn offset_write(&mut self, offset: u64, data: &[u8]) -> Result<usize> {
         let written = match self.inode {
             Inode::FreeInode { .. } => return Err(format_err!("Write through an empty inode.")),
             Inode::UsedInode { mode, ptrs, .. } => {
@@ -475,7 +506,7 @@ impl<'a> DonkeyFile<'a> {
         }
     }
 
-    fn offset_read(&mut self, offset: u64) -> Result<Vec<u8>, Error> {
+    fn offset_read(&mut self, offset: u64) -> Result<Vec<u8>> {
         match self.inode {
             Inode::FreeInode { .. } => Err(format_err!("Read through an empty inode.")),
             Inode::UsedInode {
@@ -597,26 +628,26 @@ impl<'a> Seek for DonkeyFile<'a> {
     }
 }
 
-fn read_block<B: DeserializableBlock>(dev: &mut File, ptr: u64) -> Result<B, Error> {
+fn read_block<B: DeserializableBlock>(dev: &mut File, ptr: u64) -> Result<B> {
     dev.seek(SeekFrom::Start(ptr))?;
     let block = bincode::deserialize_from(dev)?;
     Ok(block)
 }
 
-fn write_block<B: SerializableBlock>(dev: &mut File, ptr: u64, block: &B) -> Result<(), Error> {
+fn write_block<B: SerializableBlock>(dev: &mut File, ptr: u64, block: &B) -> Result<()> {
     dev.seek(SeekFrom::Start(ptr))?;
     bincode::serialize_into(dev, &block)?;
     Ok(())
 }
 
-fn inode_ptr(inode_number: u64) -> Result<u64, Error> {
+fn inode_ptr(inode_number: u64) -> Result<u64> {
     let offset = inode_number
         .checked_sub(INODE_START)
         .ok_or(format_err!("Inode number underflow!"))?;
     Ok(INODE_SIZE * offset + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE)
 }
 
-fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<(), Error> {
+fn make_boot_block(dev: &mut File, log: Option<Logger>) -> Result<()> {
     try_info!(log, "Making the boot block...");
     let boot_block = BootBlock::init();
     write_block(dev, 0, &boot_block)?;
@@ -628,14 +659,14 @@ fn make_super_block(
     inode_count: u64,
     data_block_count: u64,
     log: Option<Logger>,
-) -> Result<(), Error> {
+) -> Result<()> {
     try_info!(log, "Making the super block...");
     let super_block = SuperBlock::init(inode_count, data_block_count);
     write_block(dev, BOOT_BLOCK_SIZE, &super_block)?;
     Ok(())
 }
 
-fn make_inodes(dev: &mut File, inode_count: u64, log: Option<Logger>) -> Result<(), Error> {
+fn make_inodes(dev: &mut File, inode_count: u64, log: Option<Logger>) -> Result<()> {
     try_info!(log, "Making inodes...");
     let init_inode = Inode::init_free(inode_count);
     write_block(dev, BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE, &init_inode)?;
@@ -647,7 +678,7 @@ fn make_data_blocks(
     inode_count: u64,
     data_block_count: u64,
     log: Option<Logger>,
-) -> Result<(), Error> {
+) -> Result<()> {
     try_info!(log, "Making data blocks...");
     let free_data_block = FreeDataBlock::init(data_block_count);
     write_block(
@@ -658,7 +689,7 @@ fn make_data_blocks(
     Ok(())
 }
 
-fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, Error> {
+fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64> {
     let metadata = dev.metadata()?;
     let file_type = metadata.file_type();
 
@@ -675,12 +706,12 @@ fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64, Error> {
 }
 
 // #[cfg(target_os = "linux")]
-fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, Error> {
+fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64> {
     use std::os::unix::io::{AsRawFd, RawFd};
     let fd = dev.as_raw_fd();
 
     #[cfg(target_os = "linux")]
-    fn getsize(fd: RawFd) -> Result<u64, Error> {
+    fn getsize(fd: RawFd) -> Result<u64> {
         // https://github.com/torvalds/linux/blob/v4.17/include/uapi/linux/fs.h#L216
         ioctl_read!(getsize64, 0x12, 114, u64);
         let mut size: u64 = 0;
@@ -691,7 +722,7 @@ fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, Error> {
     }
 
     #[cfg(target_os = "macos")]
-    fn getsize(fd: RawFd) -> Result<u64, Error> {
+    fn getsize(fd: RawFd) -> Result<u64> {
         // https://github.com/apple/darwin-xnu/blob/xnu-4570.1.46/bsd/sys/disk.h#L203
         ioctl_read!(getblksize, b'd', 24, u32);
         ioctl_read!(getblkcount, b'd', 25, u64);
@@ -705,7 +736,7 @@ fn block_dev_size(dev: &File, _log: Option<Logger>) -> Result<u64, Error> {
     }
 
     #[cfg(target_os = "freebsd")]
-    fn getsize(fd: RawFd) -> Result<u64, Error> {
+    fn getsize(fd: RawFd) -> Result<u64> {
         // https://github.com/freebsd/freebsd/blob/stable/11/sys/sys/disk.h#L37
         ioctl_read!(getmediasize, b'd', 129, u64);
         let mut size: u64 = 0;
@@ -985,7 +1016,7 @@ pub struct FileAttr {
 }
 
 impl FileAttr {
-    fn from_inode(inode: Inode) -> Result<FileAttr, Error> {
+    fn from_inode(inode: Inode) -> Result<FileAttr> {
         match inode {
             Inode::UsedInode {
                 mode,
