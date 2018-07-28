@@ -198,25 +198,40 @@ impl Donkey {
         }
     }
 
+    // Returns the inode number of the new node
+    fn mknod_raw(
+        &mut self,
+        mode: FileMode,
+        uid: u32,
+        gid: u32,
+        nlink: u64,
+        _log: Option<Logger>,
+    ) -> Result<u64, Error> {
+        let inode_number = self.allocate_inode()?;
+        let time = SystemTime::now().into();
+        let inode = Inode::init_used(mode, uid, gid, nlink, time, 0);
+        self.write_inode(inode_number, &inode)?;
+        Ok(inode_number)
+    }
+
     // Returns the inode number of the new directory
+    // DO NOT link to the parent directory!!!!!!
     fn mkdir_raw(
         &mut self,
         parent_inode: u64,
         permission: FileMode,
         uid: u32,
         gid: u32,
-        nlink: u64,
         log: Option<Logger>,
     ) -> Result<u64, Error> {
-        let inode_number = self.allocate_inode()?;
-        let time = SystemTime::now().into();
         let mode = FileMode::DIRECTORY | permission;
+        let inode_number = self.mknod_raw(mode, uid, gid, 1, log.clone())?;
         let entries = [
             DirectoryEntry::new(inode_number, "."),
             DirectoryEntry::new(parent_inode, ".."),
         ];
         let buf = bincode::serialize(&entries)?;
-        let mut inode = Inode::init_used(mode, uid, gid, nlink, time, buf.len() as u64);
+        let mut inode = self.read_inode(inode_number)?;
         DonkeyFile::new(self, &mut inode).log(log).write_all(&buf)?;
         self.write_inode(inode_number, &inode)?;
         Ok(inode_number)
@@ -230,7 +245,7 @@ impl Donkey {
             | FileMode::OTHERS_READ
             | FileMode::OTHERS_EXECUTE;
         // Here we assume INODE_START is the root inode number
-        let root_inode = self.mkdir_raw(INODE_START, root_permission, 0, 0, 1, log)?;
+        let root_inode = self.mkdir_raw(INODE_START, root_permission, 0, 0, log)?;
         self.super_block.root_inode = root_inode;
         self.write_super_block()?;
         Ok(())
@@ -526,12 +541,18 @@ impl<'a> DonkeyFile<'a> {
 }
 
 impl<'a> Write for DonkeyFile<'a> {
+    // This method modifies the size in the inode
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let offset = self.offset;
         let written = self
             .offset_write(offset, buf)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         self.offset += written as u64;
+        if let Inode::UsedInode { size_or_device, .. } = &mut self.inode {
+            if self.offset > *size_or_device {
+                *size_or_device = self.offset;
+            }
+        }
         Ok(written)
     }
 
@@ -783,7 +804,7 @@ bitflags! {
         const USER_WRITE       = 0b00000000_10000000;
         const USER_EXECUTE     = 0b00000000_01000000;
         const GROUP_READ       = 0b00000000_00100000;
-        const GROUP_WRIT       = 0b00000000_00010000;
+        const GROUP_WRITE      = 0b00000000_00010000;
         const GROUP_EXECUTE    = 0b00000000_00001000;
         const OTHERS_READ      = 0b00000000_00000100;
         const OTHERS_WRITE     = 0b00000000_00000010;

@@ -226,6 +226,18 @@ impl Filesystem for DonkeyFuse {
         self.dk.close(fh);
         reply.ok();
     }
+
+    fn mknod(
+        &mut self,
+        _req: &Request,
+        _parent: u64,
+        _name: &OsStr,
+        _mode: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        unimplemented!()
+    }
 }
 
 thread_local!(static GENERATION: Cell<(i64, u64)> = Cell::new((0,0)));
