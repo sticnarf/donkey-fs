@@ -227,8 +227,8 @@ impl Donkey {
         let root_permission = FileMode::USER_RWX
             | FileMode::GROUP_READ
             | FileMode::GROUP_EXECUTE
-            | FileMode::ANY_READ
-            | FileMode::ANY_EXECUTE;
+            | FileMode::OTHERS_READ
+            | FileMode::OTHERS_EXECUTE;
         // Here we assume INODE_START is the root inode number
         let root_inode = self.mkdir_raw(INODE_START, root_permission, 0, 0, 1, log)?;
         self.super_block.root_inode = root_inode;
@@ -768,25 +768,29 @@ impl SuperBlock {
 bitflags! {
     #[derive(Serialize, Deserialize)]
     pub struct FileMode: u64 {
+        const FILE_TYPE_MASK   = 0b11110000_00000000;
+        const SOCKET           = 0b11000000_00000000;
         const REGULAR_FILE     = 0b10000000_00000000;
         const DIRECTORY        = 0b01000000_00000000;
-        const SYMBOLIC_LINK    = 0b00100000_00000000;
-        const BLOCK_DEVICE     = 0b00010000_00000000;
-        const CHARACTER_DEVICE = 0b00001000_00000000;
-        const NAMED_PIPE       = 0b00000100_00000000;
-        const SOCKET           = 0b00000010_00000000;
+        const SYMBOLIC_LINK    = 0b10100000_00000000;
+        const CHARACTER_DEVICE = 0b00100000_00000000;
+        const BLOCK_DEVICE     = 0b01100000_00000000;
+        const FIFO             = 0b00010000_00000000;
+        const SET_USER_ID      = 0b00001000_00000000;
+        const SET_GROUP_ID     = 0b00000100_00000000;
+        const STICKY           = 0b00000010_00000000;
         const USER_READ        = 0b00000001_00000000;
         const USER_WRITE       = 0b00000000_10000000;
         const USER_EXECUTE     = 0b00000000_01000000;
         const GROUP_READ       = 0b00000000_00100000;
         const GROUP_WRIT       = 0b00000000_00010000;
         const GROUP_EXECUTE    = 0b00000000_00001000;
-        const ANY_READ         = 0b00000000_00000100;
-        const ANY_WRITE        = 0b00000000_00000010;
-        const ANY_EXECUTE      = 0b00000000_00000001;
+        const OTHERS_READ      = 0b00000000_00000100;
+        const OTHERS_WRITE     = 0b00000000_00000010;
+        const OTHERS_EXECUTE   = 0b00000000_00000001;
         const USER_RWX         = 0b00000001_11000000;
         const GROUP_RWX        = 0b00000000_00111000;
-        const ANY_RWX          = 0b00000000_00000111;
+        const OTHERS_RWX       = 0b00000000_00000111;
     }
 }
 
@@ -797,15 +801,15 @@ impl From<u64> for FileMode {
 }
 
 pub fn is_regular_file<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::REGULAR_FILE).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::REGULAR_FILE
 }
 
 pub fn is_directory<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::DIRECTORY).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::DIRECTORY
 }
 
 pub fn is_symbolic_link<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::SYMBOLIC_LINK).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::SYMBOLIC_LINK
 }
 
 fn is_managed<T: Into<FileMode>>(mode: T) -> bool {
@@ -814,11 +818,11 @@ fn is_managed<T: Into<FileMode>>(mode: T) -> bool {
 }
 
 pub fn is_block_device<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::BLOCK_DEVICE).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::BLOCK_DEVICE
 }
 
 pub fn is_character_device<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::CHARACTER_DEVICE).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::CHARACTER_DEVICE
 }
 
 pub fn is_device<T: Into<FileMode>>(mode: T) -> bool {
@@ -826,12 +830,12 @@ pub fn is_device<T: Into<FileMode>>(mode: T) -> bool {
     is_block_device(mode) || is_character_device(mode)
 }
 
-pub fn is_named_pipe<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::NAMED_PIPE).is_empty()
+pub fn is_fifo<T: Into<FileMode>>(mode: T) -> bool {
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::FIFO
 }
 
 pub fn is_socket<T: Into<FileMode>>(mode: T) -> bool {
-    !(mode.into() & FileMode::SOCKET).is_empty()
+    (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::SOCKET
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default)]
