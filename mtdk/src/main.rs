@@ -9,6 +9,9 @@ extern crate libc;
 extern crate slog_term;
 extern crate time;
 
+mod dk2fuse;
+mod fuse2dk;
+
 use dkfs::*;
 use failure::Error;
 use fuse::*;
@@ -102,7 +105,7 @@ impl Filesystem for DonkeyFuse {
                 if let Some((entry, new_offset)) = result {
                     if entry.filename == name {
                         let attr = dk.get_attr(entry.inode)?;
-                        return Ok(convert_attr(attr, entry.inode));
+                        return Ok(dk2fuse::attr(attr, entry.inode));
                     }
                     offset = new_offset;
                 } else {
@@ -126,7 +129,7 @@ impl Filesystem for DonkeyFuse {
         debug!(self.log, "getattr, inode: {}", ino);
         match self.dk.get_attr(ino) {
             Ok(attr) => {
-                let fuse_attr = convert_attr(attr, ino);
+                let fuse_attr = dk2fuse::attr(attr, ino);
                 reply.attr(&TTL, &fuse_attr)
             }
             Err(e) => {
@@ -201,7 +204,7 @@ impl Filesystem for DonkeyFuse {
                     let full = reply.add(
                         entry.inode,
                         new_offset as i64,
-                        mode_to_filetype(attr.mode),
+                        dk2fuse::filetype(attr.mode),
                         entry.filename,
                     );
                     if full {
@@ -222,46 +225,6 @@ impl Filesystem for DonkeyFuse {
 
         self.dk.close(fh);
         reply.ok();
-    }
-}
-
-fn mode_to_filetype(mode: FileMode) -> FileType {
-    if is_directory(mode) {
-        FileType::Directory
-    } else if is_regular_file(mode) {
-        FileType::RegularFile
-    } else {
-        unimplemented!()
-    }
-}
-
-fn mode_to_permission(mode: FileMode) -> u16 {
-    0o777 & mode.bits() as u16
-}
-
-fn convert_timespec(t: dkfs::Timespec) -> time::Timespec {
-    time::Timespec {
-        sec: t.sec,
-        nsec: t.nsec as i32,
-    }
-}
-
-fn convert_attr(attr: dkfs::FileAttr, ino: u64) -> fuse::FileAttr {
-    fuse::FileAttr {
-        ino,
-        size: attr.size,
-        blocks: (attr.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
-        atime: convert_timespec(attr.atime),
-        mtime: convert_timespec(attr.mtime),
-        ctime: convert_timespec(attr.ctime),
-        crtime: convert_timespec(attr.crtime),
-        kind: mode_to_filetype(attr.mode),
-        perm: mode_to_permission(attr.mode),
-        nlink: attr.nlink as u32,
-        uid: attr.uid,
-        gid: attr.gid,
-        rdev: attr.rdev as u32,
-        flags: 0,
     }
 }
 
