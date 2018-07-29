@@ -1,8 +1,7 @@
 use dkfs::*;
-use fuse::*;
+use libc::*;
 
 pub fn file_mode(mode: u32) -> FileMode {
-    use libc::*;
     let mut res = FileMode::empty();
 
     let type_bits = (mode as mode_t) & S_IFMT;
@@ -55,6 +54,25 @@ pub fn file_mode(mode: u32) -> FileMode {
     }
     if (mode & S_IXOTH) != 0 {
         res |= FileMode::OTHERS_EXECUTE;
+    }
+
+    res
+}
+
+pub fn open_flags(flags: u32) -> OpenFlags {
+    let mut res = OpenFlags::empty();
+
+    let access_flags = (flags as c_int) & O_ACCMODE;
+    match access_flags {
+        O_RDONLY => res |= OpenFlags::READ_ONLY,
+        O_WRONLY => res |= OpenFlags::WRITE_ONLY,
+        O_RDWR => res |= OpenFlags::READ_WRITE,
+        _ => unreachable!(),
+    }
+
+    let flags = flags as c_int;
+    if (flags & O_APPEND) != 0 {
+        res |= OpenFlags::APPEND;
     }
 
     res

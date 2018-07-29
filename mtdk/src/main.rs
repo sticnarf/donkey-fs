@@ -93,15 +93,16 @@ impl DonkeyFuse {
         }
     }
 
-    fn dk_open(&self, inode: u64) -> Result<DonkeyFile> {
-        self.dk.open(inode, Some(self.log.clone()))
+    fn dk_open(&self, inode: u64, flags: OpenFlags) -> Result<DonkeyFile> {
+        self.dk.open(inode, flags, Some(self.log.clone()))
     }
 
     // Remember to close fh after calling this method!!!!
-    fn dk_open_fh(&mut self, inode: u64) -> Result<u64> {
-        let dkfile = self.dk_open(inode)?;
+    fn dk_open_fh(&mut self, inode: u64, flags: OpenFlags) -> Result<u64> {
+        let dkfile = self.dk_open(inode, flags)?;
         let new_fh = self.new_fh();
         self.opened_files.insert(new_fh, dkfile);
+        debug!(self.log, "open inode {}, fh: {}", inode, new_fh);
         Ok(new_fh)
     }
 
@@ -116,12 +117,14 @@ impl DonkeyFuse {
     }
 
     fn dk_getattr(&self, _req: &Request, ino: u64) -> Result<fuse::FileAttr> {
-        let dkfile = self.dk.open(ino, Some(self.log.clone()))?;
+        let dkfile = self
+            .dk
+            .open(ino, OpenFlags::READ_ONLY, Some(self.log.clone()))?;
         Ok(dk2fuse::attr(dkfile.get_attr()?, ino))
     }
 
     fn dk_lookup(&self, _req: &Request, parent: u64, name: &OsStr) -> Result<fuse::FileAttr> {
-        let mut dkfile = self.dk_open(parent)?;
+        let mut dkfile = self.dk_open(parent, OpenFlags::READ_ONLY)?;
 
         loop {
             let result = dkfile.read_dir()?;
@@ -137,9 +140,9 @@ impl DonkeyFuse {
     }
 
     // returns (fh, flags)
-    fn dk_opendir(&mut self, _req: &Request, ino: u64, _flags: u32) -> Result<(u64, u32)> {
-        let fh = self.dk_open_fh(ino)?;
-        Ok((fh, _flags))
+    fn dk_opendir(&mut self, _req: &Request, ino: u64, flags: u32) -> Result<(u64, u32)> {
+        let fh = self.dk_open_fh(ino, fuse2dk::open_flags(flags))?;
+        Ok((fh, flags))
     }
 
     // returns (entry, new_offset)
@@ -163,6 +166,28 @@ impl DonkeyFuse {
             None => Ok(None),
         }
     }
+
+    fn dk_mknod(
+        &mut self,
+        req: &Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
+    ) -> Result<fuse::FileAttr> {
+        let inode = self.dk.mknod_raw(
+            fuse2dk::file_mode(mode),
+            req.uid(),
+            req.gid(),
+            1,
+            Some(rdev as u64),
+            Some(self.log.clone()),
+        )?;
+        debug!(self.log, "Inode {} is created", inode);
+        self.dk.link(inode, parent, name, Some(self.log.clone()))?;
+        debug!(self.log, "Inode {} is linked to parent {}", inode, parent);
+        self.dk_getattr(req, inode)
+    }
 }
 
 impl Filesystem for DonkeyFuse {
@@ -178,10 +203,12 @@ impl Filesystem for DonkeyFuse {
             name.to_str().unwrap_or("not valid string")
         );
 
-        if let Ok(attr) = self.dk_lookup(_req, parent, name) {
-            reply.entry(&TTL, &attr, get_new_generation());
-        } else {
-            reply.error(libc::ENOENT);
+        match self.dk_lookup(_req, parent, name) {
+            Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(libc::ENOENT);
+            }
         }
     }
 
@@ -192,10 +219,12 @@ impl Filesystem for DonkeyFuse {
 
         debug!(self.log, "getattr, inode: {}", ino);
 
-        if let Ok(attr) = self.dk_getattr(_req, ino) {
-            reply.attr(&TTL, &attr);
-        } else {
-            reply.error(libc::ENOENT);
+        match self.dk_getattr(_req, ino) {
+            Ok(attr) => reply.attr(&TTL, &attr),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(libc::ENOENT);
+            }
         }
     }
 
@@ -285,14 +314,31 @@ impl Filesystem for DonkeyFuse {
 
     fn mknod(
         &mut self,
-        _req: &Request,
-        _parent: u64,
-        _name: &OsStr,
-        _mode: u32,
-        _rdev: u32,
+        req: &Request,
+        mut parent: u64,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
         reply: ReplyEntry,
     ) {
-        unimplemented!()
+        if parent == FUSE_ROOT_ID {
+            parent = self.dk.root_inode();
+        }
+
+        debug!(
+            self.log,
+            "mknod, parent: {}, name: {}",
+            parent,
+            name.to_str().unwrap_or("not valid string")
+        );
+
+        match self.dk_mknod(req, parent, name, mode, rdev) {
+            Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(libc::EIO);
+            }
+        }
     }
 }
 

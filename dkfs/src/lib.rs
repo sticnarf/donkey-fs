@@ -17,7 +17,7 @@ extern crate slog_try;
 
 use failure::Error;
 use slog::Logger;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::*;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -70,8 +70,13 @@ impl Donkey {
     }
 
     // Returns the file handle
-    pub fn open(&self, inode_number: u64, log: Option<Logger>) -> Result<DonkeyFile> {
-        DonkeyFile::new(self.inner.clone(), inode_number, log)
+    pub fn open(
+        &self,
+        inode_number: u64,
+        flags: OpenFlags,
+        log: Option<Logger>,
+    ) -> Result<DonkeyFile> {
+        DonkeyFile::new(self.inner.clone(), inode_number, flags, log)
     }
 
     fn create_root(&self, log: Option<Logger>) -> Result<()> {
@@ -90,25 +95,27 @@ impl Donkey {
     }
 
     // Returns the inode number of the new node
-    fn mknod_raw(
+    pub fn mknod_raw(
         &self,
         mode: FileMode,
         uid: u32,
         gid: u32,
         nlink: u64,
+        rdev: Option<u64>,
         _log: Option<Logger>,
     ) -> Result<u64> {
         let mut inner = self.lock();
         let inode_number = inner.allocate_inode()?;
         let time = SystemTime::now().into();
-        let inode = Inode::init_used(mode, uid, gid, nlink, time, 0);
+        let size_or_device = rdev.unwrap_or(0);
+        let inode = Inode::init_used(mode, uid, gid, nlink, time, size_or_device);
         inner.write_inode(inode_number, &inode)?;
         Ok(inode_number)
     }
 
     // Returns the inode number of the new directory
     // DO NOT link to the parent directory!!!!!!
-    fn mkdir_raw(
+    pub fn mkdir_raw(
         &self,
         parent_inode: u64,
         permission: FileMode,
@@ -117,7 +124,7 @@ impl Donkey {
         log: Option<Logger>,
     ) -> Result<u64> {
         let mode = FileMode::DIRECTORY | permission;
-        let inode_number = self.mknod_raw(mode, uid, gid, 1, log.clone())?;
+        let inode_number = self.mknod_raw(mode, uid, gid, 1, None, log.clone())?;
 
         let entries = [
             DirectoryEntry::new(inode_number, "."),
@@ -125,9 +132,22 @@ impl Donkey {
         ];
         let buf = bincode::serialize(&entries)?;
 
-        let mut dkfile = self.open(inode_number, log)?;
+        let mut dkfile = self.open(inode_number, OpenFlags::WRITE_ONLY, log)?;
         dkfile.write_all(&buf)?;
         Ok(inode_number)
+    }
+
+    // TODO? Cannot handle same filename!
+    pub fn link(&self, inode: u64, parent: u64, name: &OsStr, log: Option<Logger>) -> Result<()> {
+        let mut dir = self.open(
+            parent,
+            OpenFlags::WRITE_ONLY | OpenFlags::APPEND,
+            log.clone(),
+        )?;
+        let entry = DirectoryEntry::new(inode, name);
+        let buf = bincode::serialize(&entry)?;
+        dir.write_all(&buf)?;
+        Ok(())
     }
 }
 
@@ -335,20 +355,54 @@ pub struct DonkeyFile {
     inode: Inode,
     pub inode_number: u64,
     pub offset: u64,
+    flags: OpenFlags,
+    dirty: bool,
     log: Option<Logger>,
 }
 
 impl DonkeyFile {
-    fn new(dk: InnerDonkeyMutex, inode_number: u64, log: Option<Logger>) -> Result<Self> {
+    fn new(
+        dk: InnerDonkeyMutex,
+        inode_number: u64,
+        flags: OpenFlags,
+        log: Option<Logger>,
+    ) -> Result<Self> {
         let dk2 = dk.clone();
         let mut dk2 = dk2.lock().unwrap();
-        Ok(DonkeyFile {
+        let dkfile = DonkeyFile {
             dk,
             inode: dk2.read_inode(inode_number)?,
             inode_number,
             offset: 0,
+            flags,
+            dirty: false,
             log,
-        })
+        };
+        Ok(dkfile)
+    }
+
+    fn seek_end(&mut self) -> io::Result<()> {
+        let end = match &self.inode {
+            Inode::FreeInode { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Seek through an empty inode.",
+                ))
+            }
+            Inode::UsedInode {
+                mode,
+                size_or_device,
+                ..
+            } => {
+                if !is_managed(*mode) {
+                    // This file is not managed by the filesystem
+                    unreachable!()
+                }
+                *size_or_device
+            }
+        };
+        self.offset = end;
+        Ok(())
     }
 
     // This method does not modify the size in inode
@@ -522,13 +576,32 @@ impl DonkeyFile {
 impl Write for DonkeyFile {
     // This method modifies the size in the inode
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.dirty = true;
+
+        if self.flags.contains(OpenFlags::APPEND) {
+            try_debug!(self.log, "Open with APPEND flag, seek to end!");
+            self.seek_end()?;
+        }
+
         let offset = self.offset;
         let written = self
             .offset_write(offset, buf)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         self.offset += written as u64;
+        try_debug!(
+            self.log,
+            "{} bytes written, offset: {}",
+            written,
+            self.offset
+        );
         if let Inode::UsedInode { size_or_device, .. } = &mut self.inode {
             if self.offset > *size_or_device {
+                try_debug!(
+                    self.log,
+                    "Modify size from {} to {}",
+                    *size_or_device,
+                    self.offset
+                );
                 *size_or_device = self.offset;
             }
         }
@@ -560,20 +633,21 @@ impl Read for DonkeyFile {
 
 impl Seek for DonkeyFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        match pos {
-            SeekFrom::Start(pos) => self.offset = pos,
-            SeekFrom::Current(diff) => {
-                let new_offset = self.offset as i64 + diff;
-                if new_offset >= 0 {
-                    self.offset = new_offset as u64
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Seeking to a negative offset",
-                    ));
-                }
+        let new_offset = match pos {
+            SeekFrom::Start(pos) => pos as i64,
+            SeekFrom::Current(diff) => self.offset as i64 + diff,
+            SeekFrom::End(diff) => {
+                self.seek_end()?;
+                self.offset as i64 + diff
             }
-            SeekFrom::End(_) => unimplemented!(), // Seek from end is not implemented yet
+        };
+        if new_offset >= 0 {
+            self.offset = new_offset as u64
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Seeking to a negative offset",
+            ));
         }
         Ok(self.offset)
     }
@@ -581,10 +655,18 @@ impl Seek for DonkeyFile {
 
 impl Drop for DonkeyFile {
     fn drop(&mut self) {
-        let mut dk = self.dk.lock().unwrap();
-        if let Err(e) = dk.write_inode(self.inode_number, &self.inode) {
-            // If it fails, we can do nothing but print the error
-            try_error!(self.log, "{}", e);
+        if self.dirty {
+            let mut dk = self.dk.lock().unwrap();
+            if let Err(e) = dk.write_inode(self.inode_number, &self.inode) {
+                // If it fails, we can do nothing but print the error
+                try_error!(self.log, "{}", e);
+            }
+            try_debug!(
+                self.log,
+                "inode {} is written back, value: {:?}",
+                self.inode_number,
+                self.inode
+            );
         }
     }
 }
@@ -604,7 +686,7 @@ fn write_block<B: SerializableBlock>(dev: &mut File, ptr: u64, block: &B) -> Res
 fn inode_ptr(inode_number: u64) -> Result<u64> {
     let offset = inode_number
         .checked_sub(INODE_START)
-        .ok_or(format_err!("Inode number underflow!"))?;
+        .ok_or(format_err!("Inode number {} underflow!", inode_number))?;
     Ok(INODE_SIZE * offset + BOOT_BLOCK_SIZE + SUPER_BLOCK_SIZE)
 }
 
@@ -789,9 +871,11 @@ bitflags! {
         const CHARACTER_DEVICE = 0b00100000_00000000;
         const BLOCK_DEVICE     = 0b01100000_00000000;
         const FIFO             = 0b00010000_00000000;
+
         const SET_USER_ID      = 0b00001000_00000000;
         const SET_GROUP_ID     = 0b00000100_00000000;
         const STICKY           = 0b00000010_00000000;
+
         const USER_READ        = 0b00000001_00000000;
         const USER_WRITE       = 0b00000000_10000000;
         const USER_EXECUTE     = 0b00000000_01000000;
@@ -851,7 +935,41 @@ pub fn is_socket<T: Into<FileMode>>(mode: T) -> bool {
     (mode.into() & FileMode::FILE_TYPE_MASK) == FileMode::SOCKET
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Default)]
+bitflags! {
+    #[derive(Serialize, Deserialize)]
+    pub struct OpenFlags: u64 {
+        const ACCESS_MODE_MASK = 0b00000000_00000011;
+        const READ_ONLY        = 0b00000000_00000000;
+        const WRITE_ONLY       = 0b00000000_00000001;
+        const READ_WRITE       = 0b00000000_00000010;
+
+        const APPEND           = 0b00000100_00000000;
+    }
+}
+
+pub fn is_read_only<T: Into<OpenFlags>>(flags: T) -> bool {
+    (flags.into() & OpenFlags::ACCESS_MODE_MASK) == OpenFlags::READ_ONLY
+}
+
+pub fn is_write_only<T: Into<OpenFlags>>(flags: T) -> bool {
+    (flags.into() & OpenFlags::ACCESS_MODE_MASK) == OpenFlags::WRITE_ONLY
+}
+
+pub fn is_read_write<T: Into<OpenFlags>>(flags: T) -> bool {
+    (flags.into() & OpenFlags::ACCESS_MODE_MASK) == OpenFlags::READ_WRITE
+}
+
+pub fn can_read<T: Into<OpenFlags>>(flags: T) -> bool {
+    let flags = flags.into();
+    is_read_only(flags) | is_read_write(flags)
+}
+
+pub fn can_write<T: Into<OpenFlags>>(flags: T) -> bool {
+    let flags = flags.into();
+    is_write_only(flags) | is_read_write(flags)
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct Timespec {
     pub sec: i64,
     pub nsec: i64,
@@ -867,7 +985,7 @@ impl From<SystemTime> for Timespec {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 enum Inode {
     FreeInode {
         free_count: u64,
@@ -888,7 +1006,7 @@ enum Inode {
     },
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 struct InodePtrs {
     direct_ptrs: [u64; 12],
     indirect_ptr: u64,
