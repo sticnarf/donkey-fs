@@ -17,7 +17,9 @@ use failure::Error;
 use fuse::*;
 use slog::{Drain, Logger};
 use std::cell::Cell;
-use std::ffi::OsStr;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::io::{Seek, SeekFrom};
 
 fn main() {
     use clap::*;
@@ -51,6 +53,7 @@ fn main() {
         .and_then(|dk| {
             let fuse = DonkeyFuse {
                 dk,
+                opened_files: BTreeMap::new(),
                 log: log.clone(),
             };
             fuse::mount(fuse, &dir, &options)?;
@@ -70,12 +73,97 @@ fn logger() -> Logger {
     Logger::root(drain, o!())
 }
 
+type Result<T> = std::result::Result<T, Error>;
+
+const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
+
 struct DonkeyFuse {
     dk: Donkey,
+    opened_files: BTreeMap<u64, DonkeyFile>,
     log: Logger,
 }
 
-const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
+impl DonkeyFuse {
+    fn new_fh(&self) -> u64 {
+        loop {
+            let fh = get_new_fh();
+            if !self.opened_files.contains_key(&fh) {
+                return fh;
+            }
+        }
+    }
+
+    fn dk_open(&self, inode: u64) -> Result<DonkeyFile> {
+        self.dk.open(inode, Some(self.log.clone()))
+    }
+
+    // Remember to close fh after calling this method!!!!
+    fn dk_open_fh(&mut self, inode: u64) -> Result<u64> {
+        let dkfile = self.dk_open(inode)?;
+        let new_fh = self.new_fh();
+        self.opened_files.insert(new_fh, dkfile);
+        Ok(new_fh)
+    }
+
+    fn dk_find(&mut self, fh: u64) -> Result<&mut DonkeyFile> {
+        self.opened_files
+            .get_mut(&fh)
+            .ok_or(format_err!("fh is not opened"))
+    }
+
+    fn dk_close(&mut self, fh: u64) {
+        self.opened_files.remove(&fh);
+    }
+
+    fn dk_getattr(&self, _req: &Request, ino: u64) -> Result<fuse::FileAttr> {
+        let dkfile = self.dk.open(ino, Some(self.log.clone()))?;
+        Ok(dk2fuse::attr(dkfile.get_attr()?, ino))
+    }
+
+    fn dk_lookup(&self, _req: &Request, parent: u64, name: &OsStr) -> Result<fuse::FileAttr> {
+        let mut dkfile = self.dk_open(parent)?;
+
+        loop {
+            let result = dkfile.read_dir()?;
+            if let Some(entry) = result {
+                if entry.filename == name {
+                    let attr = dkfile.get_attr()?;
+                    return Ok(dk2fuse::attr(attr, entry.inode));
+                }
+            } else {
+                return Err(format_err!("Cannot find file"));
+            }
+        }
+    }
+
+    // returns (fh, flags)
+    fn dk_opendir(&mut self, _req: &Request, ino: u64, _flags: u32) -> Result<(u64, u32)> {
+        let fh = self.dk_open_fh(ino)?;
+        Ok((fh, _flags))
+    }
+
+    // returns (entry, new_offset)
+    fn dk_readdir(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+    ) -> Result<Option<(fuse::FileAttr, OsString, i64)>> {
+        let (entry, new_offset) = {
+            let dkfile = self.dk_find(fh)?;
+            dkfile.seek(SeekFrom::Start(offset as u64))?;
+            (dkfile.read_dir()?, dkfile.offset as i64)
+        };
+        match entry {
+            Some(entry) => {
+                let attr = self.dk_getattr(_req, entry.inode)?;
+                Ok(Some((attr, entry.filename, new_offset)))
+            }
+            None => Ok(None),
+        }
+    }
+}
 
 impl Filesystem for DonkeyFuse {
     fn lookup(&mut self, _req: &Request, mut parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -90,32 +178,8 @@ impl Filesystem for DonkeyFuse {
             name.to_str().unwrap_or("not valid string")
         );
 
-        fn real_lookup(
-            dk: &mut Donkey,
-            parent: u64,
-            name: &OsStr,
-            log: Logger,
-        ) -> Result<fuse::FileAttr, Error> {
-            let fh = dk.open(parent)?;
-            debug!(log, "opened {}, fh: {}", parent, fh);
-
-            let mut offset = 0;
-            loop {
-                let result = dk.read_dir(fh, offset, Some(log.clone()))?;
-                if let Some((entry, new_offset)) = result {
-                    if entry.filename == name {
-                        let attr = dk.get_attr(entry.inode)?;
-                        return Ok(dk2fuse::attr(attr, entry.inode));
-                    }
-                    offset = new_offset;
-                } else {
-                    return Err(format_err!("Cannot find file"));
-                }
-            }
-        }
-
-        if let Ok(attr) = real_lookup(&mut self.dk, parent, name, self.log.clone()) {
-            reply.entry(&TTL, &attr, get_generation());
+        if let Ok(attr) = self.dk_lookup(_req, parent, name) {
+            reply.entry(&TTL, &attr, get_new_generation());
         } else {
             reply.error(libc::ENOENT);
         }
@@ -127,15 +191,11 @@ impl Filesystem for DonkeyFuse {
         }
 
         debug!(self.log, "getattr, inode: {}", ino);
-        match self.dk.get_attr(ino) {
-            Ok(attr) => {
-                let fuse_attr = dk2fuse::attr(attr, ino);
-                reply.attr(&TTL, &fuse_attr)
-            }
-            Err(e) => {
-                error!(self.log, "{}", e);
-                reply.error(libc::ENOENT)
-            }
+
+        if let Ok(attr) = self.dk_getattr(_req, ino) {
+            reply.attr(&TTL, &attr);
+        } else {
+            reply.error(libc::ENOENT);
         }
     }
 
@@ -170,10 +230,10 @@ impl Filesystem for DonkeyFuse {
             ino = self.dk.root_inode();
         }
 
-        match self.dk.open(ino) {
-            Ok(fh) => {
-                debug!(self.log, "opened {}, fh: {}", ino, fh);
-                reply.opened(fh, 0)
+        match self.dk_opendir(_req, ino, _flags) {
+            Ok((fh, flags)) => {
+                debug!(self.log, "opened {}, fh: {}, flags: {}", ino, fh, flags);
+                reply.opened(fh, flags)
             }
             Err(_) => {
                 error!(self.log, "cannot open inode {}", ino);
@@ -187,29 +247,26 @@ impl Filesystem for DonkeyFuse {
         _req: &Request,
         _ino: u64,
         fh: u64,
-        offset: i64,
+        mut offset: i64,
         mut reply: ReplyDirectory,
     ) {
         debug!(
             self.log,
             "readdir, ino: {}, fh: {}, offset: {}", _ino, fh, offset
         );
-        let mut offset = offset as u64;
-        while let Ok(Some((entry, new_offset))) =
-            self.dk.read_dir(fh, offset, Some(self.log.clone()))
-        {
-            offset = new_offset;
-            match self.dk.get_attr(entry.inode) {
-                Ok(attr) => {
-                    let full = reply.add(
-                        entry.inode,
-                        new_offset as i64,
-                        dk2fuse::filetype(attr.mode),
-                        entry.filename,
-                    );
+
+        loop {
+            match self.dk_readdir(_req, _ino, fh, offset) {
+                Ok(Some((entry, filename, new_offset))) => {
+                    let full = reply.add(entry.ino, new_offset, entry.kind, filename);
                     if full {
                         return;
                     }
+                    offset = new_offset;
+                }
+                Ok(None) => {
+                    reply.ok();
+                    return;
                 }
                 Err(_) => {
                     reply.error(libc::ENOENT);
@@ -217,13 +274,12 @@ impl Filesystem for DonkeyFuse {
                 }
             }
         }
-        reply.ok()
     }
 
     fn releasedir(&mut self, _req: &Request, _ino: u64, fh: u64, _flags: u32, reply: ReplyEmpty) {
         debug!(self.log, "releasedir, fh: {}", fh);
 
-        self.dk.close(fh);
+        self.dk_close(fh);
         reply.ok();
     }
 
@@ -240,16 +296,30 @@ impl Filesystem for DonkeyFuse {
     }
 }
 
+// TODO?
+// Only works in a single thread environment
+
 thread_local!(static GENERATION: Cell<(i64, u64)> = Cell::new((0,0)));
 
 // Generate a unique value for NFS generation
 // https://libfuse.github.io/doxygen/structfuse__entry__param.html
-fn get_generation() -> u64 {
+fn get_new_generation() -> u64 {
     GENERATION.with(|cell| {
         let (t, g) = cell.get();
         let new_t = time::now().to_timespec().sec;
         let new_g = if t == new_t { g + 1 } else { 1 };
         cell.set((new_t, new_g));
         (new_t as u64) << 26 + new_g
+    })
+}
+
+thread_local!(static FH: Cell<u64> = Cell::new(1));
+
+// generate a new file handle number
+fn get_new_fh() -> u64 {
+    FH.with(|cell| {
+        let new_fh = cell.get() + 1;
+        cell.set(new_fh);
+        new_fh
     })
 }
