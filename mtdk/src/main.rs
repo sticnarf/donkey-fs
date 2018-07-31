@@ -43,8 +43,14 @@ fn main() {
     let log = logger();
     let dev_path = matches.value_of("device").unwrap();
     let dir = matches.value_of("dir").unwrap();
-    let options = ["-o", "fsname=donkey", "-o", "allow_other"]
-        .iter()
+    let options = [
+        "-o",
+        "fsname=donkey",
+        "-o",
+        "allow_other",
+        "-o",
+        "auto_unmount",
+    ].iter()
         .map(|o| OsStr::new(o))
         .collect::<Vec<&OsStr>>();
 
