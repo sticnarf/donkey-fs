@@ -102,14 +102,14 @@ impl Donkey {
         gid: u32,
         nlink: u64,
         rdev: Option<u64>,
-        _log: Option<Logger>,
+        log: Option<Logger>,
     ) -> Result<u64> {
         let mut inner = self.lock();
-        let inode_number = inner.allocate_inode()?;
+        let inode_number = inner.allocate_inode(log.clone())?;
         let time = SystemTime::now().into();
         let size_or_device = rdev.unwrap_or(0);
         let inode = Inode::init_used(mode, uid, gid, nlink, time, size_or_device);
-        inner.write_inode(inode_number, &inode)?;
+        inner.write_inode(inode_number, &inode, log)?;
         Ok(inode_number)
     }
 
@@ -178,11 +178,17 @@ impl InnerDonkey {
         self.write_block(BOOT_BLOCK_SIZE, &super_block)
     }
 
-    fn write_inode(&mut self, inode_number: u64, inode: &Inode) -> Result<()> {
+    fn write_inode(&mut self, inode_number: u64, inode: &Inode, log: Option<Logger>) -> Result<()> {
+        try_debug!(
+            log,
+            "inode {} is written back, value: {:?}",
+            inode_number,
+            inode
+        );
         self.write_block(inode_ptr(inode_number)?, inode)
     }
 
-    fn allocate_inode(&mut self) -> Result<u64> {
+    fn allocate_inode(&mut self, log: Option<Logger>) -> Result<u64> {
         let free_inode_number = self.super_block.free_inode;
         let inode = self.read_inode(free_inode_number)?;
         match inode {
@@ -201,7 +207,7 @@ impl InnerDonkey {
                     };
 
                     let new_inode_number = free_inode_number + 1;
-                    self.write_inode(new_inode_number, &new_inode)?;
+                    self.write_inode(new_inode_number, &new_inode, log)?;
                     self.super_block.free_inode = new_inode_number;
                 } else {
                     self.super_block.free_inode = next_free;
@@ -612,8 +618,10 @@ impl Write for DonkeyFile {
         // NOTICE: Not carefully considered!
         //         Possibly a bug!
         let mut dk = self.dk.lock().unwrap();
-        dk.write_inode(self.inode_number, &self.inode)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        if self.dirty {
+            dk.write_inode(self.inode_number, &self.inode, self.log.clone())
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        }
         dk.dev.flush()
     }
 }
@@ -657,16 +665,10 @@ impl Drop for DonkeyFile {
     fn drop(&mut self) {
         if self.dirty {
             let mut dk = self.dk.lock().unwrap();
-            if let Err(e) = dk.write_inode(self.inode_number, &self.inode) {
+            if let Err(e) = dk.write_inode(self.inode_number, &self.inode, self.log.clone()) {
                 // If it fails, we can do nothing but print the error
                 try_error!(self.log, "{}", e);
             }
-            try_debug!(
-                self.log,
-                "inode {} is written back, value: {:?}",
-                self.inode_number,
-                self.inode
-            );
         }
     }
 }
@@ -1081,6 +1083,7 @@ impl DirectoryEntry {
     }
 }
 
+#[derive(Debug)]
 pub struct FileAttr {
     pub mode: FileMode,
     pub size: u64,

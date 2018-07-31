@@ -7,7 +7,7 @@ type TmTimespec = ::time::Timespec;
 type DkFileAttr = ::dkfs::FileAttr;
 type FuseFileAttr = ::fuse::FileAttr;
 
-pub fn filetype(mode: FileMode) -> FileType {
+pub fn file_type(mode: FileMode) -> FileType {
     if is_directory(mode) {
         FileType::Directory
     } else if is_regular_file(mode) {
@@ -37,7 +37,7 @@ pub fn attr(attr: DkFileAttr, ino: u64) -> FuseFileAttr {
         mtime: timespec(attr.mtime),
         ctime: timespec(attr.ctime),
         crtime: timespec(attr.crtime),
-        kind: filetype(attr.mode),
+        kind: file_type(attr.mode),
         perm: permission(attr.mode),
         nlink: attr.nlink as u32,
         uid: attr.uid,

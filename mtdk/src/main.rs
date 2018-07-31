@@ -120,7 +120,9 @@ impl DonkeyFuse {
         let dkfile = self
             .dk
             .open(ino, OpenFlags::READ_ONLY, Some(self.log.clone()))?;
-        Ok(dk2fuse::attr(dkfile.get_attr()?, ino))
+        let attr = dkfile.get_attr()?;
+        debug!(self.log, "inode {} attr: {:?}", ino, attr);
+        Ok(dk2fuse::attr(attr, ino))
     }
 
     fn dk_lookup(&self, _req: &Request, parent: u64, name: &OsStr) -> Result<fuse::FileAttr> {
@@ -130,7 +132,8 @@ impl DonkeyFuse {
             let result = dkfile.read_dir()?;
             if let Some(entry) = result {
                 if entry.filename == name {
-                    let attr = dkfile.get_attr()?;
+                    let entry_file = self.dk_open(entry.inode, OpenFlags::READ_ONLY)?;
+                    let attr = entry_file.get_attr()?;
                     return Ok(dk2fuse::attr(attr, entry.inode));
                 }
             } else {
@@ -156,7 +159,8 @@ impl DonkeyFuse {
         let (entry, new_offset) = {
             let dkfile = self.dk_find(fh)?;
             dkfile.seek(SeekFrom::Start(offset as u64))?;
-            (dkfile.read_dir()?, dkfile.offset as i64)
+            let entry = dkfile.read_dir()?;
+            (entry, dkfile.offset as i64)
         };
         match entry {
             Some(entry) => {
@@ -204,9 +208,12 @@ impl Filesystem for DonkeyFuse {
         );
 
         match self.dk_lookup(_req, parent, name) {
-            Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
+            Ok(attr) => {
+                debug!(self.log, "lookup attr: {:?}", attr);
+                reply.entry(&TTL, &attr, get_new_generation());
+            }
             Err(e) => {
-                error!(self.log, "{}", e);
+                warn!(self.log, "{}", e);
                 reply.error(libc::ENOENT);
             }
         }
@@ -287,17 +294,28 @@ impl Filesystem for DonkeyFuse {
         loop {
             match self.dk_readdir(_req, _ino, fh, offset) {
                 Ok(Some((entry, filename, new_offset))) => {
+                    debug!(
+                        self.log,
+                        "inode {}, new_offset: {}, kind: {:?}, filename: {}",
+                        entry.ino,
+                        new_offset,
+                        entry.kind,
+                        filename.to_str().unwrap_or("not valid utf-8")
+                    );
                     let full = reply.add(entry.ino, new_offset, entry.kind, filename);
                     if full {
+                        debug!(self.log, "buffer full!");
                         return;
                     }
                     offset = new_offset;
                 }
                 Ok(None) => {
+                    debug!(self.log, "readdir reply ok!");
                     reply.ok();
                     return;
                 }
-                Err(_) => {
+                Err(e) => {
+                    warn!(self.log, "{}", e);
                     reply.error(libc::ENOENT);
                     return;
                 }
