@@ -1,5 +1,6 @@
 use dkfs::*;
 use fuse::*;
+use libc::*;
 
 type DkTimespec = ::dkfs::Timespec;
 type TmTimespec = ::time::Timespec;
@@ -45,4 +46,20 @@ pub fn attr(attr: DkFileAttr, ino: u64) -> FuseFileAttr {
         rdev: attr.rdev as u32,
         flags: 0,
     }
+}
+
+pub fn open_flags(flags: OpenFlags) -> u32 {
+    let access_flags = flags & OpenFlags::ACCESS_MODE_MASK;
+    let mut res = match access_flags {
+        OpenFlags::READ_ONLY => O_RDONLY,
+        OpenFlags::WRITE_ONLY => O_WRONLY,
+        OpenFlags::READ_WRITE => O_RDWR,
+        _ => unreachable!(),
+    };
+
+    if flags.contains(OpenFlags::APPEND) {
+        res |= O_APPEND;
+    }
+
+    res as u32
 }

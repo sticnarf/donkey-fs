@@ -361,7 +361,7 @@ pub struct DonkeyFile {
     inode: Inode,
     pub inode_number: u64,
     pub offset: u64,
-    flags: OpenFlags,
+    pub flags: OpenFlags,
     dirty: bool,
     log: Option<Logger>,
 }

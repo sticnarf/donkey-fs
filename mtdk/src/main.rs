@@ -19,7 +19,7 @@ use slog::{Drain, Logger};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 
 fn main() {
     use clap::*;
@@ -99,17 +99,24 @@ impl DonkeyFuse {
         }
     }
 
-    fn dk_open(&self, inode: u64, flags: OpenFlags) -> Result<DonkeyFile> {
+    fn dk_open(&self, _req: &Request, inode: u64, flags: OpenFlags) -> Result<DonkeyFile> {
         self.dk.open(inode, flags, Some(self.log.clone()))
     }
 
+    // Returns file handle
     // Remember to close fh after calling this method!!!!
-    fn dk_open_fh(&mut self, inode: u64, flags: OpenFlags) -> Result<u64> {
-        let dkfile = self.dk_open(inode, flags)?;
+    fn dk_open_fh(
+        &mut self,
+        _req: &Request,
+        inode: u64,
+        flags: OpenFlags,
+    ) -> Result<(u64, OpenFlags)> {
+        let dkfile = self.dk_open(_req, inode, flags)?;
+        let flags = dkfile.flags;
         let new_fh = self.new_fh();
         self.opened_files.insert(new_fh, dkfile);
         debug!(self.log, "open inode {}, fh: {}", inode, new_fh);
-        Ok(new_fh)
+        Ok((new_fh, flags))
     }
 
     fn dk_find(&mut self, fh: u64) -> Result<&mut DonkeyFile> {
@@ -132,13 +139,13 @@ impl DonkeyFuse {
     }
 
     fn dk_lookup(&self, _req: &Request, parent: u64, name: &OsStr) -> Result<fuse::FileAttr> {
-        let mut dkfile = self.dk_open(parent, OpenFlags::READ_ONLY)?;
+        let mut dkfile = self.dk_open(_req, parent, OpenFlags::READ_ONLY)?;
 
         loop {
             let result = dkfile.read_dir()?;
             if let Some(entry) = result {
                 if entry.filename == name {
-                    let entry_file = self.dk_open(entry.inode, OpenFlags::READ_ONLY)?;
+                    let entry_file = self.dk_open(_req, entry.inode, OpenFlags::READ_ONLY)?;
                     let attr = entry_file.get_attr()?;
                     return Ok(dk2fuse::attr(attr, entry.inode));
                 }
@@ -146,12 +153,6 @@ impl DonkeyFuse {
                 return Err(format_err!("Cannot find file"));
             }
         }
-    }
-
-    // returns (fh, flags)
-    fn dk_opendir(&mut self, _req: &Request, ino: u64, flags: u32) -> Result<(u64, u32)> {
-        let fh = self.dk_open_fh(ino, fuse2dk::open_flags(flags))?;
-        Ok((fh, flags))
     }
 
     // returns (entry, new_offset)
@@ -198,6 +199,28 @@ impl DonkeyFuse {
         debug!(self.log, "Inode {} is linked to parent {}", inode, parent);
         self.dk_getattr(req, inode)
     }
+
+    fn dk_read(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+    ) -> Result<Vec<u8>> {
+        let dkfile = self.dk_find(fh)?;
+        let size = size as usize;
+        dkfile.seek(SeekFrom::Start(offset as u64))?;
+        let mut buf = vec![0; size];
+        match dkfile.read_exact(&mut buf[..]) {
+            Ok(()) => Ok(buf),
+            Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                buf.truncate(size);
+                Ok(buf)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 impl Filesystem for DonkeyFuse {
@@ -235,50 +258,68 @@ impl Filesystem for DonkeyFuse {
         match self.dk_getattr(_req, ino) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => {
-                error!(self.log, "{}", e);
+                warn!(self.log, "{}", e);
                 reply.error(libc::ENOENT);
             }
         }
     }
 
-    fn open(&mut self, _req: &Request, mut ino: u64, _flags: u32, reply: ReplyOpen) {
+    fn open(&mut self, _req: &Request, mut ino: u64, flags: u32, reply: ReplyOpen) {
         if ino == FUSE_ROOT_ID {
             ino = self.dk.root_inode();
         }
 
         debug!(self.log, "open, inode: {}", ino);
+
+        match self.dk_open_fh(_req, ino, fuse2dk::open_flags(flags)) {
+            Ok((fh, flags)) => {
+                debug!(self.log, "opened {}, fh: {}, flags: {:?}", ino, fh, flags);
+                reply.opened(fh, dk2fuse::open_flags(flags))
+            }
+            Err(e) => {
+                warn!(self.log, "{}", e);
+                reply.error(libc::ENOENT)
+            }
+        }
     }
 
     fn read(
         &mut self,
         _req: &Request,
         mut ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
-        _size: u32,
+        size: u32,
         reply: ReplyData,
     ) {
         if ino == FUSE_ROOT_ID {
             ino = self.dk.root_inode();
         }
+        info!(self.log, "read, ino: {}, fh: {}, size: {}", ino, fh, size);
 
-        info!(self.log, "read, ino: {}, fh: {}, size: {}", ino, _fh, _size);
+        match self.dk_read(_req, ino, fh, offset, size) {
+            Ok(data) => reply.data(&data),
+            Err(e) => {
+                warn!(self.log, "{}", e);
+                reply.error(libc::EIO);
+            }
+        }
     }
 
-    fn opendir(&mut self, _req: &Request, mut ino: u64, _flags: u32, reply: ReplyOpen) {
-        debug!(self.log, "opendir, ino: {}", ino);
-
+    fn opendir(&mut self, _req: &Request, mut ino: u64, flags: u32, reply: ReplyOpen) {
         if ino == FUSE_ROOT_ID {
             ino = self.dk.root_inode();
         }
 
-        match self.dk_opendir(_req, ino, _flags) {
+        debug!(self.log, "opendir, ino: {}", ino);
+
+        match self.dk_open_fh(_req, ino, fuse2dk::open_flags(flags)) {
             Ok((fh, flags)) => {
-                debug!(self.log, "opened {}, fh: {}, flags: {}", ino, fh, flags);
-                reply.opened(fh, flags)
+                debug!(self.log, "opened {}, fh: {}, flags: {:?}", ino, fh, flags);
+                reply.opened(fh, dk2fuse::open_flags(flags))
             }
-            Err(_) => {
-                error!(self.log, "cannot open inode {}", ino);
+            Err(e) => {
+                warn!(self.log, "{}", e);
                 reply.error(libc::ENOENT)
             }
         }
@@ -359,7 +400,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_mknod(req, parent, name, mode, rdev) {
             Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
             Err(e) => {
-                error!(self.log, "{}", e);
+                warn!(self.log, "{}", e);
                 reply.error(libc::EIO);
             }
         }
