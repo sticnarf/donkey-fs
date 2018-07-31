@@ -306,6 +306,22 @@ impl Filesystem for DonkeyFuse {
         }
     }
 
+    fn release(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        debug!(self.log, "release, fh: {}, ", fh);
+
+        self.dk_close(fh);
+        reply.ok();
+    }
+
     fn opendir(&mut self, _req: &Request, mut ino: u64, flags: u32, reply: ReplyOpen) {
         if ino == FUSE_ROOT_ID {
             ino = self.dk.root_inode();
