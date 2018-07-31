@@ -228,7 +228,7 @@ impl DonkeyFuse {
             fuse2dk::file_mode(mode),
             req.uid(),
             req.gid(),
-            1,
+            0,
             Some(rdev as u64),
             Some(self.log.clone()),
         )?;

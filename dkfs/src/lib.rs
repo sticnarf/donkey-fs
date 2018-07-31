@@ -127,27 +127,30 @@ impl Donkey {
         let mode = FileMode::DIRECTORY | permission;
         let inode_number = self.mknod_raw(mode, uid, gid, 0, None, log.clone())?;
 
-        let entries = [
-            DirectoryEntry::new(inode_number, "."),
-            DirectoryEntry::new(parent_inode, ".."),
-        ];
-        let buf = bincode::serialize(&entries)?;
-
-        let mut dkfile = self.open(inode_number, OpenFlags::WRITE_ONLY, log)?;
-        dkfile.write_all(&buf)?;
+        // let entries = [
+        //     DirectoryEntry::new(inode_number, "."),
+        //     DirectoryEntry::new(parent_inode, ".."),
+        // ];
+        // let buf = bincode::serialize(&entries)?;
+        // let mut dkfile = self.open(inode_number, OpenFlags::WRITE_ONLY, log)?;
+        // dkfile.write_all(&buf)?;
+        self.link(inode_number, parent_inode, OsStr::new("."), log.clone())?;
+        self.link(inode_number, parent_inode, OsStr::new(".."), log.clone())?;
         Ok(inode_number)
     }
 
     // TODO? Cannot handle same filename!
     pub fn link(&self, inode: u64, parent: u64, name: &OsStr, log: Option<Logger>) -> Result<()> {
-        let mut dir = self.open(
-            parent,
-            OpenFlags::WRITE_ONLY | OpenFlags::APPEND,
-            log.clone(),
-        )?;
-        let entry = DirectoryEntry::new(inode, name);
-        let buf = bincode::serialize(&entry)?;
-        dir.write_all(&buf)?;
+        {
+            let mut dir = self.open(
+                parent,
+                OpenFlags::WRITE_ONLY | OpenFlags::APPEND,
+                log.clone(),
+            )?;
+            let entry = DirectoryEntry::new(inode, name);
+            let buf = bincode::serialize(&entry)?;
+            dir.write_all(&buf)?;
+        }
 
         let mut file = self.open(inode, OpenFlags::WRITE_ONLY, log)?;
         file.set_attr(SetFileAttr::new().nlink_inc(1))?;
