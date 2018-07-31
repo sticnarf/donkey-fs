@@ -114,7 +114,8 @@ impl Donkey {
     }
 
     // Returns the inode number of the new directory
-    // DO NOT link to the parent directory!!!!!!
+    // This method DOES NOT link the new directory to
+    // the parent directory!!!!!!
     pub fn mkdir_raw(
         &self,
         parent_inode: u64,
@@ -124,7 +125,7 @@ impl Donkey {
         log: Option<Logger>,
     ) -> Result<u64> {
         let mode = FileMode::DIRECTORY | permission;
-        let inode_number = self.mknod_raw(mode, uid, gid, 1, None, log.clone())?;
+        let inode_number = self.mknod_raw(mode, uid, gid, 0, None, log.clone())?;
 
         let entries = [
             DirectoryEntry::new(inode_number, "."),
@@ -147,6 +148,9 @@ impl Donkey {
         let entry = DirectoryEntry::new(inode, name);
         let buf = bincode::serialize(&entry)?;
         dir.write_all(&buf)?;
+
+        let mut file = self.open(inode, OpenFlags::WRITE_ONLY, log)?;
+        file.set_attr(SetFileAttr::new().nlink_inc(1))?;
         Ok(())
     }
 }
@@ -575,6 +579,50 @@ impl DonkeyFile {
     }
 
     pub fn get_attr(&self) -> Result<FileAttr> {
+        FileAttr::from_inode(&self.inode)
+    }
+
+    pub fn set_attr(&mut self, attr: SetFileAttr) -> Result<FileAttr> {
+        macro_rules! modify {
+            ($i:ident) => {
+                if let Some(v) = attr.$i {
+                    *$i = v;
+                }
+            };
+        }
+
+        match &mut self.inode {
+            Inode::FreeInode { .. } => return Err(format_err!("Bad inode.")),
+            Inode::UsedInode {
+                mode,
+                uid,
+                gid,
+                nlink,
+                atime,
+                mtime,
+                ctime,
+                crtime,
+                size_or_device,
+                ..
+            } => {
+                modify!(mode);
+                modify!(atime);
+                modify!(mtime);
+                modify!(ctime);
+                modify!(crtime);
+                modify!(uid);
+                modify!(gid);
+                if let Some(size) = attr.size {
+                    *size_or_device = size;
+                }
+                if let Some(nlink_inc) = attr.nlink_inc {
+                    let new_nlink = *nlink as i64 + nlink_inc;
+                    *nlink = new_nlink as u64;
+                }
+            }
+        }
+
+        self.dirty = true;
         FileAttr::from_inode(&self.inode)
     }
 }
@@ -1133,6 +1181,70 @@ impl FileAttr {
             }
             _ => Err(format_err!("Bad inode.")),
         }
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SetFileAttr {
+    pub mode: Option<FileMode>,
+    pub size: Option<u64>,
+    pub atime: Option<Timespec>,
+    pub mtime: Option<Timespec>,
+    pub ctime: Option<Timespec>,
+    pub crtime: Option<Timespec>,
+    pub nlink_inc: Option<i64>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+}
+
+impl SetFileAttr {
+    pub fn new() -> Self {
+        SetFileAttr::default()
+    }
+
+    pub fn mode(mut self, mode: FileMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    pub fn size(mut self, size: u64) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    pub fn atime(mut self, atime: Timespec) -> Self {
+        self.atime = Some(atime);
+        self
+    }
+
+    pub fn ctime(mut self, ctime: Timespec) -> Self {
+        self.ctime = Some(ctime);
+        self
+    }
+
+    pub fn crtime(mut self, crtime: Timespec) -> Self {
+        self.crtime = Some(crtime);
+        self
+    }
+
+    pub fn mtime(mut self, mtime: Timespec) -> Self {
+        self.mtime = Some(mtime);
+        self
+    }
+
+    pub fn nlink_inc(mut self, nlink_inc: i64) -> Self {
+        self.nlink_inc = Some(nlink_inc);
+        self
+    }
+
+    pub fn uid(mut self, uid: u32) -> Self {
+        self.uid = Some(uid);
+        self
+    }
+
+    pub fn gid(mut self, gid: u32) -> Self {
+        self.gid = Some(gid);
+        self
     }
 }
 

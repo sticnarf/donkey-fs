@@ -138,6 +138,44 @@ impl DonkeyFuse {
         Ok(dk2fuse::attr(attr, ino))
     }
 
+    fn dk_setattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<time::Timespec>,
+        mtime: Option<time::Timespec>,
+        _fh: Option<u64>,
+        crtime: Option<time::Timespec>,
+        chgtime: Option<time::Timespec>,
+        _bkuptime: Option<time::Timespec>,
+        _flags: Option<u32>,
+    ) -> Result<fuse::FileAttr> {
+        let mode = mode.map(|mode| fuse2dk::file_mode(mode));
+        let atime = atime.map(|atime| fuse2dk::timespec(atime));
+        let mtime = mtime.map(|mtime| fuse2dk::timespec(mtime));
+        let ctime = chgtime.map(|ctime| fuse2dk::timespec(ctime));
+        let crtime = crtime.map(|crtime| fuse2dk::timespec(crtime));
+        let set_attr = SetFileAttr {
+            mode,
+            uid,
+            gid,
+            size,
+            atime,
+            mtime,
+            ctime,
+            crtime,
+            ..Default::default()
+        };
+        let mut dkfile = self.dk_open(_req, ino, OpenFlags::WRITE_ONLY)?;
+        dkfile
+            .set_attr(set_attr)
+            .map(|attr| dk2fuse::attr(attr, ino))
+    }
+
     fn dk_lookup(&self, _req: &Request, parent: u64, name: &OsStr) -> Result<fuse::FileAttr> {
         let mut dkfile = self.dk_open(_req, parent, OpenFlags::READ_ONLY)?;
 
@@ -260,6 +298,40 @@ impl Filesystem for DonkeyFuse {
             Err(e) => {
                 warn!(self.log, "{}", e);
                 reply.error(libc::ENOENT);
+            }
+        }
+    }
+
+    fn setattr(
+        &mut self,
+        req: &Request,
+        mut ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<time::Timespec>,
+        mtime: Option<time::Timespec>,
+        fh: Option<u64>,
+        crtime: Option<time::Timespec>,
+        chgtime: Option<time::Timespec>,
+        bkuptime: Option<time::Timespec>,
+        flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        if ino == FUSE_ROOT_ID {
+            ino = self.dk.root_inode();
+        }
+
+        debug!(self.log, "setattr, inode: {}, fh: {:?}", ino, fh);
+
+        match self.dk_setattr(
+            req, ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags,
+        ) {
+            Ok(attr) => reply.attr(&TTL, &attr),
+            Err(e) => {
+                warn!(self.log, "{}", e);
+                reply.error(libc::EIO);
             }
         }
     }

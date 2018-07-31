@@ -1,6 +1,9 @@
 use dkfs::*;
 use libc::*;
 
+type DkTimespec = ::dkfs::Timespec;
+type TmTimespec = ::time::Timespec;
+
 pub fn file_mode(mode: u32) -> FileMode {
     let mut res = FileMode::empty();
 
@@ -76,4 +79,11 @@ pub fn open_flags(flags: u32) -> OpenFlags {
     }
 
     res
+}
+
+pub fn timespec(t: TmTimespec) -> DkTimespec {
+    DkTimespec {
+        sec: t.sec,
+        nsec: t.nsec as i64,
+    }
 }
