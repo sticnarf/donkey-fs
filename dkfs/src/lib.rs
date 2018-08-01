@@ -127,13 +127,6 @@ impl Donkey {
         let mode = FileMode::DIRECTORY | permission;
         let inode_number = self.mknod_raw(mode, uid, gid, 0, None, log.clone())?;
 
-        // let entries = [
-        //     DirectoryEntry::new(inode_number, "."),
-        //     DirectoryEntry::new(parent_inode, ".."),
-        // ];
-        // let buf = bincode::serialize(&entries)?;
-        // let mut dkfile = self.open(inode_number, OpenFlags::WRITE_ONLY, log)?;
-        // dkfile.write_all(&buf)?;
         self.link(inode_number, parent_inode, OsStr::new("."), log.clone())?;
         self.link(inode_number, parent_inode, OsStr::new(".."), log.clone())?;
         Ok(inode_number)
@@ -633,6 +626,13 @@ impl DonkeyFile {
 impl Write for DonkeyFile {
     // This method modifies the size in the inode
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if !can_write(self.flags) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "No permission to write.",
+            ));
+        }
+
         self.dirty = true;
 
         if self.flags.contains(OpenFlags::APPEND) {
@@ -679,6 +679,13 @@ impl Write for DonkeyFile {
 
 impl Read for DonkeyFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !can_read(self.flags) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "No permission to write.",
+            ));
+        }
+
         let offset = self.offset;
         let read = self
             .offset_read(offset)
