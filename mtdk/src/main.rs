@@ -19,7 +19,7 @@ use slog::{Drain, Logger};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 fn main() {
     use clap::*;
@@ -278,6 +278,21 @@ impl DonkeyFuse {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn dk_write(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        _flags: u32,
+    ) -> Result<u32> {
+        let dkfile = self.dk_find(fh)?;
+        dkfile.seek(SeekFrom::Start(offset as u64))?;
+        let written = dkfile.write(data)?;
+        Ok(written as u32)
     }
 }
 
@@ -540,6 +555,48 @@ impl Filesystem for DonkeyFuse {
                 reply.error(libc::EIO);
             }
         }
+    }
+
+    fn write(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        _flags: u32,
+        reply: ReplyWrite,
+    ) {
+        debug!(self.log, "write, fh: {}, {} bytes", fh, data.len());
+
+        match self.dk_write(_req, _ino, fh, offset, data, _flags) {
+            Ok(written) => reply.written(written),
+            Err(e) => {
+                warn!(self.log, "{}", e);
+                reply.error(libc::EIO);
+            }
+        }
+    }
+
+    fn fsync(&mut self, _req: &Request, _ino: u64, _fh: u64, _datasync: bool, reply: ReplyEmpty) {
+        debug!(
+            self.log,
+            "fsync, ino: {}, fh: {}, datasync: {}", _ino, _fh, _datasync
+        );
+    }
+
+    fn fsyncdir(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _fh: u64,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        debug!(
+            self.log,
+            "fsync, ino: {}, fh: {}, datasync: {}", _ino, _fh, _datasync
+        );
     }
 }
 

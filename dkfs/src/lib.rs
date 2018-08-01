@@ -373,17 +373,16 @@ impl DonkeyFile {
         flags: OpenFlags,
         log: Option<Logger>,
     ) -> Result<Self> {
-        let dk2 = dk.clone();
-        let mut dk2 = dk2.lock().unwrap();
-        let dkfile = DonkeyFile {
+        let mut dkfile = DonkeyFile {
             dk,
-            inode: dk2.read_inode(inode_number)?,
+            inode: Inode::init_free(0),
             inode_number,
             offset: 0,
             flags,
             dirty: false,
             log,
         };
+        dkfile.reload_inode()?;
         Ok(dkfile)
     }
 
@@ -556,6 +555,12 @@ impl DonkeyFile {
             }
         }
     }
+
+    fn reload_inode(&mut self) -> Result<()> {
+        let mut dk = self.dk.lock().unwrap();
+        self.inode = dk.read_inode(self.inode_number)?;
+        Ok(())
+    }
 }
 
 impl DonkeyFile {
@@ -633,6 +638,8 @@ impl Write for DonkeyFile {
             ));
         }
 
+        self.reload_inode()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         self.dirty = true;
 
         if self.flags.contains(OpenFlags::APPEND) {
