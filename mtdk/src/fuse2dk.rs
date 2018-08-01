@@ -16,7 +16,7 @@ pub fn file_mode(mode: u32) -> FileMode {
         S_IFDIR => res |= FileMode::DIRECTORY,
         S_IFCHR => res |= FileMode::CHARACTER_DEVICE,
         S_IFIFO => res |= FileMode::FIFO,
-        _ => unreachable!(),
+        _ => {}
     }
 
     {

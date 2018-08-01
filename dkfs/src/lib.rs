@@ -97,7 +97,7 @@ impl Donkey {
     // Returns the inode number of the new node
     pub fn mknod_raw(
         &self,
-        mode: FileMode,
+        permission: FileMode,
         uid: u32,
         gid: u32,
         nlink: u64,
@@ -108,7 +108,7 @@ impl Donkey {
         let inode_number = inner.allocate_inode(log.clone())?;
         let time = SystemTime::now().into();
         let size_or_device = rdev.unwrap_or(0);
-        let inode = Inode::init_used(mode, uid, gid, nlink, time, size_or_device);
+        let inode = Inode::init_used(permission, uid, gid, nlink, time, size_or_device);
         inner.write_inode(inode_number, &inode, log)?;
         Ok(inode_number)
     }
@@ -127,8 +127,8 @@ impl Donkey {
         let mode = FileMode::DIRECTORY | permission;
         let inode_number = self.mknod_raw(mode, uid, gid, 0, None, log.clone())?;
 
-        self.link(inode_number, parent_inode, OsStr::new("."), log.clone())?;
-        self.link(inode_number, parent_inode, OsStr::new(".."), log.clone())?;
+        self.link(inode_number, inode_number, OsStr::new("."), log.clone())?;
+        self.link(parent_inode, inode_number, OsStr::new(".."), log.clone())?;
         Ok(inode_number)
     }
 

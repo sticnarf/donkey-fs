@@ -238,6 +238,26 @@ impl DonkeyFuse {
         self.dk_getattr(req, inode)
     }
 
+    fn dk_mkdir(
+        &mut self,
+        req: &Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+    ) -> Result<fuse::FileAttr> {
+        let inode = self.dk.mkdir_raw(
+            parent,
+            fuse2dk::file_mode(mode),
+            req.uid(),
+            req.gid(),
+            Some(self.log.clone()),
+        )?;
+        debug!(self.log, "Inode {} is created", inode);
+        self.dk.link(inode, parent, name, Some(self.log.clone()))?;
+        debug!(self.log, "Inode {} is linked to parent {}", inode, parent);
+        self.dk_getattr(req, inode)
+    }
+
     fn dk_read(
         &mut self,
         _req: &Request,
@@ -486,6 +506,34 @@ impl Filesystem for DonkeyFuse {
         );
 
         match self.dk_mknod(req, parent, name, mode, rdev) {
+            Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
+            Err(e) => {
+                warn!(self.log, "{}", e);
+                reply.error(libc::EIO);
+            }
+        }
+    }
+
+    fn mkdir(
+        &mut self,
+        req: &Request,
+        mut parent: u64,
+        name: &OsStr,
+        mode: u32,
+        reply: ReplyEntry,
+    ) {
+        if parent == FUSE_ROOT_ID {
+            parent = self.dk.root_inode();
+        }
+
+        debug!(
+            self.log,
+            "mkdir, parent: {}, name: {}",
+            parent,
+            name.to_str().unwrap_or("not valid string")
+        );
+
+        match self.dk_mkdir(req, parent, name, mode) {
             Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
             Err(e) => {
                 warn!(self.log, "{}", e);
