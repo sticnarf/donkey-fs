@@ -17,6 +17,7 @@ extern crate slog_try;
 
 use failure::Error;
 use slog::Logger;
+use std::cmp::min;
 use std::ffi::{OsStr, OsString};
 use std::fs::*;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -35,6 +36,7 @@ pub const BLOCK_SIZE: u64 = 4096;
 pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 pub const DEFAULT_BYTES_PER_INODE_STR: &'static str = "16384";
 pub const INODE_START: u64 = 114514;
+pub const PTR_COUNT_IN_A_BLOCK: u64 = 512;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -239,6 +241,47 @@ impl InnerDonkey {
         Ok(free)
     }
 
+    fn fill_zero(&mut self, block_ptr: u64) -> Result<()> {
+        self.dev.seek(SeekFrom::Start(block_ptr))?;
+        self.dev.write_all(&[0u8; BLOCK_SIZE as usize])?;
+        Ok(())
+    }
+
+    // Releases `count` blocks
+    // `ptr` points to an indirect block if level > 0
+    // If level == 0, count must be 1
+    fn release_blocks(&mut self, ptr: u64, level: i32, count: u64) -> Result<()> {
+        assert!(ptr != 0); // Block must be allocated
+
+        if level == 0 {
+            assert_eq!(count, 1);
+            let free = self.super_block.free_block_ptr;
+            let data = FreeDataBlock {
+                free_count: 1,
+                next_free: free,
+            };
+            self.write_block(ptr, &data)?;
+            self.super_block.free_block_ptr = ptr;
+        } else {
+            assert!(level > 0 && level <= 4);
+            let indirect_block_count = PTR_COUNT_IN_A_BLOCK.pow((level - 1) as u32);
+            self.dev.seek(SeekFrom::Start(ptr))?;
+            let mut data = [0u8; BLOCK_SIZE as usize];
+            self.dev.read_exact(&mut data)?;
+            let mut release_count = 0;
+            for chunk in data.chunks(8) {
+                let ptr = bincode::deserialize_from(chunk)?;
+                let new_count = min(count, release_count + indirect_block_count);
+                if ptr != 0 {
+                    self.release_blocks(ptr, level - 1, new_count - release_count)?;
+                }
+                release_count = new_count;
+            }
+        }
+        self.write_super_block()?;
+        Ok(())
+    }
+
     // If level is 0, then ptr is a direct pointer
     // offset is counted from the beginning of ptr
     // ptr must be the beginning of a block
@@ -250,23 +293,32 @@ impl InnerDonkey {
         offset: u64,
         data: &[u8],
     ) -> Result<usize> {
-        assert!(ptr != 0); // Block must be already allocated
+        if ptr == 0 {
+            // Block must be already allocated
+            return Err(format_err!("Read through an invalid pointer."));
+        }
         let block_offset = offset % BLOCK_SIZE;
         let block_left = (BLOCK_SIZE - block_offset) as usize;
-        let write_len = std::cmp::min(block_left, data.len());
+        let write_len = min(block_left, data.len());
+        println!("ptr: {}, offset: {}, level: {}", ptr, offset, level);
 
         if level == 0 {
             self.dev.seek(SeekFrom::Start(ptr + block_offset))?;
             self.dev.write_all(&data[..write_len])?;
         } else {
             assert!(level > 0 && level <= 4);
-            let indirect_block_size = 512u64.pow((level - 1) as u32);
+            let indirect_block_size = BLOCK_SIZE * PTR_COUNT_IN_A_BLOCK.pow((level - 1) as u32);
             let block_index = offset / indirect_block_size;
             self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
             let mut next_ptr = bincode::deserialize_from(&mut self.dev)?;
+            println!("block_index: {}, next_ptr: {}", block_index, next_ptr);
             if next_ptr == 0 {
                 next_ptr = self.allocate_block()?;
+                if level > 1 {
+                    self.fill_zero(next_ptr)?;
+                }
                 self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
+                println!("size: {:?}", bincode::serialized_size(&next_ptr));
                 bincode::serialize_into(&mut self.dev, &next_ptr)?;
             }
             self.write_via_indirect_ptr(
@@ -295,7 +347,8 @@ impl InnerDonkey {
         }
         let block_offset = offset % BLOCK_SIZE;
         let block_left = (BLOCK_SIZE - block_offset) as usize;
-        let read_size = std::cmp::min(block_left, limit);
+        let read_size = min(block_left, limit);
+        println!("ptr: {}, offset: {}, level: {}", ptr, offset, level);
 
         if level == 0 {
             let mut data = vec![0; read_size];
@@ -304,10 +357,11 @@ impl InnerDonkey {
             Ok(data)
         } else {
             assert!(level > 0 && level <= 4);
-            let indirect_block_size = 512u64.pow((level - 1) as u32);
+            let indirect_block_size = BLOCK_SIZE * PTR_COUNT_IN_A_BLOCK.pow((level - 1) as u32);
             let block_index = offset / indirect_block_size;
             self.dev.seek(SeekFrom::Start(ptr + block_index * 8))?;
             let next_ptr = bincode::deserialize_from(&mut self.dev)?;
+            println!("block_index: {}, next_ptr: {}", block_index, next_ptr);
             self.read_via_indirect_ptr(next_ptr, level - 1, offset % indirect_block_size, limit)
         }
     }
@@ -410,8 +464,81 @@ impl DonkeyFile {
         Ok(())
     }
 
+    // File size is shrinked from `from` to `to`.
+    fn modify_size(&mut self, new_size: u64) -> Result<()> {
+        let mut dk = self.dk.lock().unwrap();
+        match &mut self.inode {
+            Inode::FreeInode { .. } => return Err(format_err!("Release through an empty inode.")),
+            Inode::UsedInode {
+                mode,
+                size_or_device,
+                ptrs,
+                ..
+            } => {
+                if !is_managed(*mode) {
+                    // This file is not managed by the filesystem
+                    unreachable!()
+                }
+                let old_size = *size_or_device;
+                *size_or_device = new_size;
+                if old_size > new_size {
+                    let begin = (new_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                    let end = (old_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+                    if begin < 12 {
+                        let i_end = min(end, 12);
+                        for i in begin..i_end {
+                            dk.release_blocks(ptrs.direct_ptrs[i as usize], 0, 1)?;
+                        }
+                    }
+
+                    if begin < 12 + 512 && end > 12 {
+                        dk.release_blocks(ptrs.indirect_ptr, 1, min(end - 12, 512))?;
+                    }
+
+                    if begin < 12 + 512 + 512 * 512 && end > (12 + 512) {
+                        dk.release_blocks(
+                            ptrs.double_indirect_ptr,
+                            1,
+                            min(end - (12 + 512), 512 * 512),
+                        )?;
+                    }
+
+                    if begin < 12 + 512 + 512 * 512 + 512 * 512 * 512
+                        && end > (12 + 512 + 512 * 512)
+                    {
+                        dk.release_blocks(
+                            ptrs.triple_indirect_ptr,
+                            1,
+                            min(end - (12 + 512 + 512 * 512), 512 * 512 * 512),
+                        )?;
+                    }
+
+                    if end > (12 + 512 + 512 * 512 + 512 * 512 * 512) {
+                        dk.release_blocks(
+                            ptrs.quadruple_indirect_ptr,
+                            1,
+                            min(
+                                end - (12 + 512 + 512 * 512 + 512 * 512 * 512),
+                                512 * 512 * 512 * 512,
+                            ),
+                        )?;
+                    }
+                }
+            }
+        }
+        dk.write_inode(self.inode_number, &self.inode, self.log.clone())
+    }
+
     // This method does not modify the size in inode
     fn offset_write(&mut self, offset: u64, data: &[u8]) -> Result<usize> {
+        try_debug!(
+            self.log,
+            "write, offset: {}, data.len: {}, inode: {:?}",
+            offset,
+            data.len(),
+            self.inode
+        );
         let written = {
             let mut dk = self.dk.lock().unwrap();
             match &mut self.inode {
@@ -425,9 +552,20 @@ impl DonkeyFile {
                     if block_index < 12 {
                         // direct pointer
                         let block_index = block_index as usize;
+                        try_debug!(
+                            self.log,
+                            "level 0, block_index: {}, Target ptr: {}",
+                            block_index,
+                            ptrs.direct_ptrs[block_index]
+                        );
                         if ptrs.direct_ptrs[block_index] == 0 {
                             // block is not allocated
                             ptrs.direct_ptrs[block_index] = dk.allocate_block()?;
+                            try_debug!(
+                                self.log,
+                                "Newly allocated ptr: {}",
+                                ptrs.direct_ptrs[block_index]
+                            );
                         }
                         dk.write_via_indirect_ptr(
                             ptrs.direct_ptrs[block_index],
@@ -437,9 +575,17 @@ impl DonkeyFile {
                         )?
                     } else if block_index < 12 + 512 {
                         // indirect pointer
+                        try_debug!(
+                            self.log,
+                            "level 1, block_index: {}, Target ptr: {}",
+                            block_index,
+                            ptrs.indirect_ptr
+                        );
                         if ptrs.indirect_ptr == 0 {
                             // indirect block is not allocated
                             ptrs.indirect_ptr = dk.allocate_block()?;
+                            dk.fill_zero(ptrs.indirect_ptr)?;
+                            try_debug!(self.log, "Newly allocated ptr: {}", ptrs.indirect_ptr);
                         }
                         dk.write_via_indirect_ptr(
                             ptrs.indirect_ptr,
@@ -452,6 +598,7 @@ impl DonkeyFile {
                         if ptrs.double_indirect_ptr == 0 {
                             // double indirect block is not allocated
                             ptrs.double_indirect_ptr = dk.allocate_block()?;
+                            dk.fill_zero(ptrs.double_indirect_ptr)?;
                         }
                         dk.write_via_indirect_ptr(
                             ptrs.double_indirect_ptr,
@@ -464,6 +611,7 @@ impl DonkeyFile {
                         if ptrs.triple_indirect_ptr == 0 {
                             // triple indirect block is not allocated
                             ptrs.triple_indirect_ptr = dk.allocate_block()?;
+                            dk.fill_zero(ptrs.triple_indirect_ptr)?;
                         }
                         dk.write_via_indirect_ptr(
                             ptrs.triple_indirect_ptr,
@@ -477,6 +625,7 @@ impl DonkeyFile {
                         if ptrs.quadruple_indirect_ptr == 0 {
                             // triple indirect block is not allocated
                             ptrs.quadruple_indirect_ptr = dk.allocate_block()?;
+                            dk.fill_zero(ptrs.quadruple_indirect_ptr)?;
                         }
                         dk.write_via_indirect_ptr(
                             ptrs.quadruple_indirect_ptr,
@@ -603,7 +752,6 @@ impl DonkeyFile {
                 mtime,
                 ctime,
                 crtime,
-                size_or_device,
                 ..
             } => {
                 modify!(mode);
@@ -613,14 +761,15 @@ impl DonkeyFile {
                 modify!(crtime);
                 modify!(uid);
                 modify!(gid);
-                if let Some(size) = attr.size {
-                    *size_or_device = size;
-                }
                 if let Some(nlink_inc) = attr.nlink_inc {
                     let new_nlink = *nlink as i64 + nlink_inc;
                     *nlink = new_nlink as u64;
                 }
             }
+        }
+
+        if let Some(size) = attr.size {
+            self.modify_size(size)?;
         }
 
         self.dirty = true;
@@ -638,9 +787,9 @@ impl Write for DonkeyFile {
             ));
         }
 
-        self.reload_inode()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         self.dirty = true;
+        self.reload_inode()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
         if self.flags.contains(OpenFlags::APPEND) {
             try_debug!(self.log, "Open with APPEND flag, seek to end!");
@@ -650,7 +799,7 @@ impl Write for DonkeyFile {
         let offset = self.offset;
         let written = self
             .offset_write(offset, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
         self.offset += written as u64;
         try_debug!(
             self.log,
@@ -658,15 +807,18 @@ impl Write for DonkeyFile {
             written,
             self.offset
         );
-        if let Inode::UsedInode { size_or_device, .. } = &mut self.inode {
-            if self.offset > *size_or_device {
+        if let Inode::UsedInode { size_or_device, .. } = self.inode {
+            if self.offset != size_or_device {
                 try_debug!(
                     self.log,
                     "Modify size from {} to {}",
-                    *size_or_device,
+                    size_or_device,
                     self.offset
                 );
-                *size_or_device = self.offset;
+                let offset = self.offset;
+                // inode is written back in the `modify_size` method
+                self.modify_size(offset)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
             }
         }
         Ok(written)
@@ -678,7 +830,7 @@ impl Write for DonkeyFile {
         let mut dk = self.dk.lock().unwrap();
         if self.dirty {
             dk.write_inode(self.inode_number, &self.inode, self.log.clone())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
         }
         dk.dev.flush()
     }
@@ -696,8 +848,8 @@ impl Read for DonkeyFile {
         let offset = self.offset;
         let read = self
             .offset_read(offset)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
-        let len = std::cmp::min(buf.len(), read.len());
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        let len = min(buf.len(), read.len());
         buf[..len].copy_from_slice(&read[..len]);
         self.offset += len as u64;
         Ok(len)
@@ -732,7 +884,7 @@ impl Drop for DonkeyFile {
             let mut dk = self.dk.lock().unwrap();
             if let Err(e) = dk.write_inode(self.inode_number, &self.inode, self.log.clone()) {
                 // If it fails, we can do nothing but print the error
-                try_error!(self.log, "{}", e);
+                try_error!(self.log, "{:?}", e);
             }
         }
     }

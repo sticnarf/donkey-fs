@@ -315,7 +315,7 @@ impl Filesystem for DonkeyFuse {
                 reply.entry(&TTL, &attr, get_new_generation());
             }
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::ENOENT);
             }
         }
@@ -331,7 +331,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_getattr(_req, ino) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::ENOENT);
             }
         }
@@ -365,7 +365,7 @@ impl Filesystem for DonkeyFuse {
         ) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::EIO);
             }
         }
@@ -384,7 +384,7 @@ impl Filesystem for DonkeyFuse {
                 reply.opened(fh, dk2fuse::open_flags(flags))
             }
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::ENOENT)
             }
         }
@@ -407,7 +407,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_read(_req, ino, fh, offset, size) {
             Ok(data) => reply.data(&data),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::EIO);
             }
         }
@@ -442,7 +442,7 @@ impl Filesystem for DonkeyFuse {
                 reply.opened(fh, dk2fuse::open_flags(flags))
             }
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::ENOENT)
             }
         }
@@ -485,7 +485,7 @@ impl Filesystem for DonkeyFuse {
                     return;
                 }
                 Err(e) => {
-                    warn!(self.log, "{}", e);
+                    warn!(self.log, "{:?}", e);
                     reply.error(libc::ENOENT);
                     return;
                 }
@@ -523,7 +523,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_mknod(req, parent, name, mode, rdev) {
             Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::EIO);
             }
         }
@@ -551,7 +551,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_mkdir(req, parent, name, mode) {
             Ok(attr) => reply.entry(&TTL, &attr, get_new_generation()),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::EIO);
             }
         }
@@ -572,7 +572,7 @@ impl Filesystem for DonkeyFuse {
         match self.dk_write(_req, _ino, fh, offset, data, _flags) {
             Ok(written) => reply.written(written),
             Err(e) => {
-                warn!(self.log, "{}", e);
+                warn!(self.log, "{:?}", e);
                 reply.error(libc::EIO);
             }
         }
