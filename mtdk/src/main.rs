@@ -15,11 +15,13 @@ mod fuse2dk;
 use dkfs::*;
 use failure::Error;
 use fuse::*;
+use libc::*;
 use slog::{Drain, Logger};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 fn main() {
     use clap::*;
@@ -578,6 +580,10 @@ impl Filesystem for DonkeyFuse {
         }
     }
 
+    fn flush(&mut self, _req: &Request, _ino: u64, _fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
+        unimplemented!()
+    }
+
     fn fsync(&mut self, _req: &Request, _ino: u64, _fh: u64, _datasync: bool, reply: ReplyEmpty) {
         debug!(
             self.log,
@@ -597,6 +603,152 @@ impl Filesystem for DonkeyFuse {
             self.log,
             "fsync, ino: {}, fh: {}, datasync: {}", _ino, _fh, _datasync
         );
+    }
+
+    fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        debug!(
+            self.log,
+            "unlink parent: {}, name: {}",
+            parent,
+            name.to_str().unwrap_or("not valid utf-8")
+        );
+        unimplemented!()
+    }
+
+    fn rmdir(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        debug!(
+            self.log,
+            "unlink parent: {}, name: {}",
+            parent,
+            name.to_str().unwrap_or("not valid utf-8")
+        );
+        unimplemented!()
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request,
+        _parent: u64,
+        _name: &OsStr,
+        _newparent: u64,
+        _newname: &OsStr,
+        reply: ReplyEmpty,
+    ) {
+        unimplemented!()
+    }
+
+    fn init(&mut self, _req: &Request) -> std::result::Result<(), c_int> {
+        unimplemented!()
+    }
+
+    fn destroy(&mut self, _req: &Request) {
+        unimplemented!()
+    }
+
+    fn forget(&mut self, _req: &Request, _ino: u64, _nlookup: u64) {
+        unimplemented!()
+    }
+
+    fn readlink(&mut self, _req: &Request, _ino: u64, reply: ReplyData) {
+        unimplemented!()
+    }
+
+    fn symlink(
+        &mut self,
+        _req: &Request,
+        _parent: u64,
+        _name: &OsStr,
+        _link: &Path,
+        reply: ReplyEntry,
+    ) {
+        unimplemented!()
+    }
+
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        unimplemented!()
+    }
+
+    fn setxattr(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _name: &OsStr,
+        _value: &[u8],
+        _flags: u32,
+        _position: u32,
+        reply: ReplyEmpty,
+    ) {
+        unimplemented!()
+    }
+
+    fn getxattr(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _name: &OsStr,
+        _size: u32,
+        reply: ReplyXattr,
+    ) {
+        unimplemented!()
+    }
+
+    fn listxattr(&mut self, _req: &Request, _ino: u64, _size: u32, reply: ReplyXattr) {
+        unimplemented!()
+    }
+
+    fn removexattr(&mut self, _req: &Request, _ino: u64, _name: &OsStr, reply: ReplyEmpty) {
+        unimplemented!()
+    }
+
+    fn access(&mut self, _req: &Request, _ino: u64, _mask: u32, reply: ReplyEmpty) {
+        unimplemented!()
+    }
+
+    fn create(
+        &mut self,
+        _req: &Request,
+        _parent: u64,
+        _name: &OsStr,
+        _mode: u32,
+        _flags: u32,
+        reply: ReplyCreate,
+    ) {
+        unimplemented!()
+    }
+
+    fn getlk(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _fh: u64,
+        _lock_owner: u64,
+        _start: u64,
+        _end: u64,
+        _typ: u32,
+        _pid: u32,
+        reply: ReplyLock,
+    ) {
+        unimplemented!()
+    }
+
+    fn setlk(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _fh: u64,
+        _lock_owner: u64,
+        _start: u64,
+        _end: u64,
+        _typ: u32,
+        _pid: u32,
+        _sleep: bool,
+        reply: ReplyEmpty,
+    ) {
+        unimplemented!()
+    }
+
+    fn bmap(&mut self, _req: &Request, _ino: u64, _blocksize: u32, _idx: u64, reply: ReplyBmap) {
+        unimplemented!()
     }
 }
 
