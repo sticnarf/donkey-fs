@@ -28,6 +28,11 @@ use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
+mod block;
+mod device;
+
+pub use block::Block;
+
 pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 pub const BOOT_BLOCK_SIZE: u64 = 1024;
 pub const SUPER_BLOCK_SIZE: u64 = 1024;
@@ -39,6 +44,7 @@ pub const INODE_START: u64 = 114514;
 pub const PTR_COUNT_IN_A_BLOCK: u64 = 512;
 
 type Result<T> = std::result::Result<T, Error>;
+type DkResult<T> = std::result::Result<T, Error>;
 
 pub struct DonkeyBuilder {
     dev: File,
