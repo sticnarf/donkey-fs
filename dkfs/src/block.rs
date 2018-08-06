@@ -20,9 +20,10 @@ where
     }
 }
 
-pub trait Block: Sized {
+pub trait Block {
     fn from_bytes<I, U>(bytes: I) -> DkResult<Self>
     where
+        Self: Sized,
         I: Iterator<Item = U>,
         U: IntoByteResult;
 

@@ -23,13 +23,15 @@ use std::fs::*;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Drop;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
-mod block;
-mod device;
+pub mod block;
+#[macro_use]
+pub mod device;
 
 pub use block::Block;
 
@@ -452,7 +454,7 @@ impl DonkeyFile {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Seek through an empty inode.",
-                ))
+                ));
             }
             Inode::UsedInode {
                 mode,
@@ -961,7 +963,6 @@ fn dev_size(dev: &File, log: Option<Logger>) -> Result<u64> {
     let metadata = dev.metadata()?;
     let file_type = metadata.file_type();
 
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
     if file_type.is_file() {
         try_info!(log, "Regular file detected. Treat it as an image file.");
         Ok(metadata.size())
@@ -1033,16 +1034,25 @@ impl FormatOptions {
         self
     }
 }
+
 trait SerializableBlock: serde::ser::Serialize {}
+
 trait DeserializableBlock: serde::de::DeserializeOwned {}
 
 impl SerializableBlock for BootBlock {}
+
 impl SerializableBlock for SuperBlock {}
+
 impl SerializableBlock for Inode {}
+
 impl SerializableBlock for FreeDataBlock {}
+
 impl DeserializableBlock for BootBlock {}
+
 impl DeserializableBlock for SuperBlock {}
+
 impl DeserializableBlock for Inode {}
+
 impl DeserializableBlock for FreeDataBlock {}
 
 // A boot block occupies 1024 bytes.
