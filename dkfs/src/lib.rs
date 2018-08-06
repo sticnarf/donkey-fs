@@ -1210,6 +1210,8 @@ pub struct Timespec {
     pub nsec: i64,
 }
 
+type DkTimespec = Timespec;
+
 impl From<SystemTime> for Timespec {
     fn from(t: SystemTime) -> Self {
         let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap();

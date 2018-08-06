@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{FileTypeExt};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use {Block, DkResult};
@@ -10,16 +10,13 @@ pub trait Device: Read + Write + Seek {
 
     fn block_size(&self) -> u64;
 
-    fn read_block<'a>(
-        &'a mut self,
-        bid: u64,
-    ) -> DkResult<Box<dyn Iterator<Item = io::Result<u8>> + 'a>> {
+    fn read_block<'a>(&'a mut self, bid: u64) -> DkResult<Box<dyn Read + 'a>> {
         let (bc, bs) = (self.block_count(), self.block_size());
         if bid >= bc {
             Err(format_err!("Read block {} of {}", bid, bc))
         } else {
             self.seek(SeekFrom::Start(bid * bs))?;
-            Ok(Box::new(self.bytes().take(bs as usize)))
+            Ok(Box::new(self.take(bs)))
         }
     }
 
@@ -29,8 +26,8 @@ pub trait Device: Read + Write + Seek {
             Err(format_err!("Write block {} of {}", bid, bc))
         } else {
             self.seek(SeekFrom::Start(bid * bs))?;
-            let bytes = block.as_bytes();
-            Ok(self.write_all(bytes)?)
+            let bytes = block.as_bytes()?;
+            Ok(self.write_all(&bytes)?)
         }
     }
 }
@@ -50,7 +47,8 @@ pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
 // The default block size is 4 KiB
 const DEFAULT_BLOCK_SIZE: u64 = 4096;
 
-pub struct ImageFile {
+#[derive(Debug)]
+struct ImageFile {
     file: File,
     block_count: u64,
 }
@@ -104,7 +102,8 @@ impl Seek for ImageFile {
     }
 }
 
-pub struct BlockDevice {
+#[derive(Debug)]
+struct BlockDevice {
     file: File,
     block_count: u64,
     block_size: u64,
