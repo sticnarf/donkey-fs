@@ -1,8 +1,7 @@
+use super::*;
 use bincode::{deserialize_from, serialize};
 use std::io::{self, Read};
 use std::ops::Deref;
-use {DkResult, DkTimespec, FileMode};
-use device::Device;
 
 pub trait Block {
     /// Do necessary validation.
@@ -22,14 +21,14 @@ pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SuperBlock {
-    pub magic_number: u64,
-    pub block_size: u64,
-    pub inode_count: u64,
-    pub used_inode_count: u64,
-    pub data_count: u64,
-    pub used_data_count: u64,
-    pub free_inode_ptr: u64,
-    pub free_data_ptr: u64,
+    pub(crate) magic_number: u64,
+    pub(crate) block_size: u64,
+    pub(crate) inode_count: u64,
+    pub(crate) used_inode_count: u64,
+    pub(crate) data_count: u64,
+    pub(crate) used_data_count: u64,
+    pub(crate) free_inode_ptr: u64,
+    pub(crate) free_data_ptr: u64,
 }
 
 /// Validates `SuperBlock`.
@@ -45,43 +44,66 @@ fn sbv(sb: &SuperBlock) -> DkResult<()> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FreeInode {
-    pub next_free_ptr: u64,
+    pub(crate) next_free_ptr: u64,
     /// Number of continuous free inodes counting from this
-    pub free_count: u64,
+    pub(crate) free_count: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Inode {
-    pub ino: u64,
-    pub mode: FileMode,
-    pub uid: u32,
-    pub gid: u32,
-    pub nlink: u64,
-    pub atime: DkTimespec,
-    pub mtime: DkTimespec,
-    pub ctime: DkTimespec,
-    pub crtime: DkTimespec,
+    pub(crate) ino: u64,
+    pub(crate) mode: FileMode,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) nlink: u64,
+    pub(crate) atime: DkTimespec,
+    pub(crate) mtime: DkTimespec,
+    pub(crate) ctime: DkTimespec,
+    pub(crate) crtime: DkTimespec,
     /// valid for non-device files
-    pub size: u64,
+    pub(crate) size: u64,
     /// valid for device special files
-    pub device: u64,
-    pub ptrs: InodePtrs,
+    pub(crate) device: u64,
+    pub(crate) ptrs: InodePtrs,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+fn inv(inode: &Inode) -> DkResult<()> {
+    if inode.ino < ROOT_INODE {
+        Err(format_err!(
+            "Inode number {} is smaller than the root inode number {}",
+            inode.ino,
+            ROOT_INODE
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+impl Inode {
+    /// Converts ptr to inode number
+    pub fn ino(ptr: u64) -> u64 {
+        (ptr - FIRST_INODE_PTR) / INODE_SIZE + ROOT_INODE
+    }
+
+    pub fn ptr(&self) -> u64 {
+        (self.ino - ROOT_INODE) * ::INODE_SIZE + FIRST_INODE_PTR
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct InodePtrs {
-    pub direct_ptrs: [u64; 12],
-    pub indirect_ptr: u64,
-    pub double_indirect_ptr: u64,
-    pub triple_indirect_ptr: u64,
-    pub quadruple_indirect_ptr: u64,
+    pub(crate) direct_ptrs: [u64; 12],
+    pub(crate) indirect_ptr: u64,
+    pub(crate) double_indirect_ptr: u64,
+    pub(crate) triple_indirect_ptr: u64,
+    pub(crate) quadruple_indirect_ptr: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FreeData {
-    pub next_free_ptr: u64,
+    pub(crate) next_free_ptr: u64,
     /// Number of continuous free data blocks counting from this
-    pub free_count: u64,
+    pub(crate) free_count: u64,
 }
 
 #[derive(Debug)]
@@ -114,7 +136,7 @@ macro_rules! impl_block {
 
 impl_block!(SuperBlock; validation: sbv);
 impl_block!(FreeInode);
-impl_block!(Inode);
+impl_block!(Inode; validation: inv);
 impl_block!(FreeData);
 
 impl Block for Data {
