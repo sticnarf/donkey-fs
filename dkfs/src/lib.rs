@@ -30,8 +30,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 pub mod block;
-#[macro_use]
 pub mod device;
+pub mod file;
 
 pub use block::Block;
 

@@ -4,6 +4,12 @@ use std::ops::Deref;
 use {DkResult, DkTimespec, FileMode};
 
 pub trait Block {
+    /// Do necessary validation.
+    /// Used in `from_bytes` after deserialization.
+    fn validate(&self) -> DkResult<()> {
+        Ok(())
+    }
+
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
     where
         Self: Sized;
@@ -61,25 +67,44 @@ struct InodePtrs {
 struct Data(Vec<u8>);
 
 macro_rules! impl_block {
-    ($b:ty) => {
+    ($b:ty$(; validation: $f:ident)*) => {
         impl Block for $b {
             fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
             where
                 Self: Sized,
             {
-                Ok(deserialize_from(bytes)?)
+                let b: Self = deserialize_from(bytes)?;
+                b.validate()?;
+                Ok(b)
             }
 
             fn as_bytes(&self) -> DkResult<Box<Deref<Target = [u8]>>> {
                 Ok(Box::new(serialize(&self)?))
             }
+
+            $(
+            fn validate(&self) -> DkResult<()> {
+                $f(self)
+            }
+            )*
         }
     };
 }
 
-impl_block!(SuperBlock);
+impl_block!(SuperBlock; validation: sbv);
 impl_block!(FreeInode);
 impl_block!(Inode);
+
+/// Validates `SuperBlock`.
+fn sbv(sb: &SuperBlock) -> DkResult<()> {
+    if sb.magic_number != ::MAGIC_NUMBER {
+        Err(format_err!(
+            "Magic number validation failed! It is probably not using Donkey filesystem."
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 impl Block for Data {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
