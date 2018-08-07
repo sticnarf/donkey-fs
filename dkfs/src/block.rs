@@ -2,6 +2,7 @@ use bincode::{deserialize_from, serialize};
 use std::io::{self, Read};
 use std::ops::Deref;
 use {DkResult, DkTimespec, FileMode};
+use device::Device;
 
 pub trait Block {
     /// Do necessary validation.
@@ -17,54 +18,74 @@ pub trait Block {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>>;
 }
 
+pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
+
 #[derive(Debug, Serialize, Deserialize)]
-struct SuperBlock {
-    magic_number: u64,
-    block_size: u64,
-    inode_count: u64,
-    used_inode_count: u64,
-    data_count: u64,
-    used_data_count: u64,
-    free_inode_ptr: u64,
-    free_data_ptr: u64,
+pub struct SuperBlock {
+    pub magic_number: u64,
+    pub block_size: u64,
+    pub inode_count: u64,
+    pub used_inode_count: u64,
+    pub data_count: u64,
+    pub used_data_count: u64,
+    pub free_inode_ptr: u64,
+    pub free_data_ptr: u64,
+}
+
+/// Validates `SuperBlock`.
+fn sbv(sb: &SuperBlock) -> DkResult<()> {
+    if sb.magic_number != MAGIC_NUMBER {
+        Err(format_err!(
+            "Magic number validation failed! It is probably not using Donkey filesystem."
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FreeInode {
-    ptr: u64,
-    next_free_ptr: u64,
-    /// Number of continuous free inodes counting from `ptr`
-    free_count: u64,
+pub struct FreeInode {
+    pub next_free_ptr: u64,
+    /// Number of continuous free inodes counting from this
+    pub free_count: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Inode {
-    mode: FileMode,
-    uid: u32,
-    gid: u32,
-    nlink: u64,
-    atime: DkTimespec,
-    mtime: DkTimespec,
-    ctime: DkTimespec,
-    crtime: DkTimespec,
+pub struct Inode {
+    pub ino: u64,
+    pub mode: FileMode,
+    pub uid: u32,
+    pub gid: u32,
+    pub nlink: u64,
+    pub atime: DkTimespec,
+    pub mtime: DkTimespec,
+    pub ctime: DkTimespec,
+    pub crtime: DkTimespec,
     /// valid for non-device files
-    size: u64,
+    pub size: u64,
     /// valid for device special files
-    device: u64,
-    ptrs: InodePtrs,
+    pub device: u64,
+    pub ptrs: InodePtrs,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct InodePtrs {
-    direct_ptrs: [u64; 12],
-    indirect_ptr: u64,
-    double_indirect_ptr: u64,
-    triple_indirect_ptr: u64,
-    quadruple_indirect_ptr: u64,
+pub struct InodePtrs {
+    pub direct_ptrs: [u64; 12],
+    pub indirect_ptr: u64,
+    pub double_indirect_ptr: u64,
+    pub triple_indirect_ptr: u64,
+    pub quadruple_indirect_ptr: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FreeData {
+    pub next_free_ptr: u64,
+    /// Number of continuous free data blocks counting from this
+    pub free_count: u64,
 }
 
 #[derive(Debug)]
-struct Data(Vec<u8>);
+pub struct Data(Vec<u8>);
 
 macro_rules! impl_block {
     ($b:ty$(; validation: $f:ident)*) => {
@@ -94,17 +115,7 @@ macro_rules! impl_block {
 impl_block!(SuperBlock; validation: sbv);
 impl_block!(FreeInode);
 impl_block!(Inode);
-
-/// Validates `SuperBlock`.
-fn sbv(sb: &SuperBlock) -> DkResult<()> {
-    if sb.magic_number != ::MAGIC_NUMBER {
-        Err(format_err!(
-            "Magic number validation failed! It is probably not using Donkey filesystem."
-        ))
-    } else {
-        Ok(())
-    }
-}
+impl_block!(FreeData);
 
 impl Block for Data {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>

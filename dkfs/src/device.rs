@@ -1,11 +1,13 @@
+use block::Block;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
-use {Block, DkResult};
+use DkResult;
+use std::fmt::Debug;
 
-pub trait Device: Read + Write + Seek {
+pub trait Device: Read + Write + Seek + Debug {
     fn block_count(&self) -> u64;
 
     fn block_size(&self) -> u64;

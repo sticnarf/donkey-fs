@@ -1,14 +1,10 @@
 #[macro_use]
 extern crate clap;
-#[macro_use]
-extern crate slog;
 extern crate dkfs;
-extern crate slog_term;
 
 use dkfs::*;
-use slog::{Drain, Logger};
 
-fn main() {
+fn main() -> DkResult<()> {
     use clap::*;
 
     let matches = App::new("mkdk")
@@ -29,25 +25,11 @@ fn main() {
         )
         .get_matches();
 
-    let log = logger();
     let dev_path = matches.value_of("device").unwrap();
     let bytes_per_inode =
         value_t!(matches.value_of("bytes-per-inode"), u64).unwrap_or_else(|e| e.exit());
 
-    let opt = FormatOptions::new().bytes_per_inode(bytes_per_inode);
-    let donkey = DonkeyBuilder::new(dev_path).and_then(|dk| dk.format(&opt, Some(log.clone())));
-
-    if let Err(e) = donkey {
-        error!(log, "{}", e);
-    } else {
-        info!(log, "Done.");
-    }
-}
-
-fn logger() -> Logger {
-    let plain = slog_term::TermDecorator::new().build();
-    let drain = slog_term::CompactFormat::new(plain).build().fuse();
-    let drain = std::sync::Mutex::new(drain).fuse();
-
-    Logger::root(drain, o!())
+    let opt = FormatOptions::default().bytes_per_inode(bytes_per_inode);
+    let _ = Donkey::format(dev_path, opt)?;
+    Ok(())
 }
