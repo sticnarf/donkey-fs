@@ -41,11 +41,12 @@ use block::FreeData;
 use block::FreeInode;
 use block::{Block, Inode, SuperBlock};
 use device::Device;
-use file::DkFile;
+use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
 use std::cell::Ref;
 use std::cell::RefCell;
+use std::collections::hash_map::{self, HashMap};
 use std::ops::Deref;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 const BOOT_BLOCK_SIZE: u64 = 1024;
 const SUPER_BLOCK_SIZE: u64 = 1024;
@@ -66,13 +67,15 @@ pub type DkResult<T> = std::result::Result<T, Error>;
 pub struct Donkey {
     dev: Box<Device>,
     sb: SuperBlock,
+    opened_files: HashMap<u64, Weak<RefCell<DkFile>>>,
+    opened_dirs: HashMap<u64, Weak<RefCell<DkDir>>>,
 }
 
 impl Donkey {
     pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Handle> {
         let mut dev = device::open(dev_path)?;
         let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
-        let dk = Donkey { dev, sb };
+        let dk = Donkey::new(dev, sb);
         Ok(Handle::new(dk))
     }
 
@@ -112,10 +115,19 @@ impl Donkey {
         };
         dev.write_block_at(&fb, first_data_ptr)?;
 
-        let dk = Donkey { dev, sb };
+        let dk = Donkey::new(dev, sb);
         let handle = Handle::new(dk);
         Donkey::create_root(handle.clone())?;
         Ok(handle)
+    }
+
+    fn new(dev: Box<Device>, sb: SuperBlock) -> Self {
+        Donkey {
+            dev,
+            sb,
+            opened_files: HashMap::new(),
+            opened_dirs: HashMap::new(),
+        }
     }
 
     /// We take care of block alignment here in case when
@@ -274,38 +286,56 @@ impl Handle {
     fn mkdir_raw(&self, parent_ino: u64, perm: FileMode, uid: u32, gid: u32) -> DkResult<u64> {
         let mode = FileMode::DIRECTORY | perm;
         let ino = self.mknod(mode, uid, gid, 0, None)?;
+
         // Create `.` and `..` entry
-        self.link(ino, ino, OsStr::new("."))?;
-        self.link(parent_ino, ino, OsStr::new(".."))?;
+        let dir = self.open_dir(ino)?;
+        dir.borrow_mut().add_entry(OsStr::new("."), ino)?;
+        dir.borrow_mut().add_entry(OsStr::new(".."), parent_ino)?;
+
         Ok(ino)
     }
 
-    // TODO? Cannot handle same filename!
-    pub fn link(&self, ino: u64, parent_ino: u64, name: &OsStr) -> DkResult<()> {
-        // {
-        //     let mut dir = self.open(parent_ino, Flags::WRITE_ONLY | Flags::APPEND)?;
-        //     let entry = DirectoryEntry::new(ino, name);
-        //     let buf = bincode::serialize(&entry)?;
-        //     dir.write_all(&buf)?;
-        // }
-
-        // let mut file = self.open(ino, Flags::WRITE_ONLY)?;
-        // file.set_attr(SetFileAttr::new().nlink_inc(1))?;
-        // Ok(())
-        unimplemented!()
+    pub fn open_file(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
+        let inner = match self.borrow_mut().opened_files.entry(ino) {
+            hash_map::Entry::Occupied(e) => {
+                // We ensure that all `Weak`s in the map is valid,
+                // so we simply unwrap here.
+                e.get().upgrade().unwrap()
+            }
+            hash_map::Entry::Vacant(e) => {
+                let inode = self.read_inode(ino)?;
+                let f = DkFile {
+                    handle: self.clone(),
+                    inode,
+                    pos: 0,
+                    dirty: false,
+                };
+                let rc = Rc::new(RefCell::new(f));
+                e.insert(Rc::downgrade(&rc));
+                rc
+            }
+        };
+        let handle = DkFileHandle { inner, flags };
+        Ok(handle)
     }
 
-    pub fn open(&self, ino: u64, flags: Flags) -> DkResult<DkFile> {
-        let f = DkFile {
-            handle: self.clone(),
-            inode: self.read_inode(ino)?,
-            pos: 0,
-            flags,
-            dirty: false,
+    pub fn open_dir(&self, ino: u64) -> DkResult<DkDirHandle> {
+        let inner = match self.borrow_mut().opened_dirs.entry(ino) {
+            hash_map::Entry::Occupied(e) => {
+                // We ensure that all `Weak`s in the map is valid,
+                // so we simply unwrap here.
+                e.get().upgrade().unwrap()
+            }
+            hash_map::Entry::Vacant(e) => {
+                let fh = self.open_file(ino, Flags::READ_WRITE)?;
+                let dir = DkDir::from_file(fh)?;
+                let rc = Rc::new(RefCell::new(dir));
+                e.insert(Rc::downgrade(&rc));
+                rc
+            }
         };
-        // TODO
-        // Use data structures to record opens
-        Ok(f)
+        let handle = DkDirHandle { inner };
+        Ok(handle)
     }
 }
 
@@ -374,6 +404,44 @@ bitflags! {
         const USER_RWX         = 0b00000001_11000000;
         const GROUP_RWX        = 0b00000000_00111000;
         const OTHERS_RWX       = 0b00000000_00000111;
+    }
+}
+
+impl FileMode {
+    pub fn is_regular_file(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::REGULAR_FILE
+    }
+
+    pub fn is_directory(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::DIRECTORY
+    }
+
+    pub fn is_symbolic_link(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::SYMBOLIC_LINK
+    }
+
+    pub fn is_managed(self) -> bool {
+        self.is_regular_file() || self.is_directory() || self.is_symbolic_link()
+    }
+
+    pub fn is_block_device(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::BLOCK_DEVICE
+    }
+
+    pub fn is_character_device(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::CHARACTER_DEVICE
+    }
+
+    pub fn is_device(self) -> bool {
+        self.is_block_device() || self.is_character_device()
+    }
+
+    pub fn is_fifo(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::FIFO
+    }
+
+    pub fn is_socket(self) -> bool {
+        (self & FileMode::FILE_TYPE_MASK) == FileMode::SOCKET
     }
 }
 
