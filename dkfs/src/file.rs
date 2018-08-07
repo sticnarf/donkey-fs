@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::{DerefMut, Drop};
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 #[derive(Debug)]
 pub struct DkFile {
@@ -27,13 +27,36 @@ impl Write for DkFile {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        unimplemented!()
+        if self.dirty {
+            if let Err(e) = self.handle.write_inode(&self.inode) {
+                try_error!(
+                    self.handle.log,
+                    "Failed to write directory of ino {}! {}",
+                    self.inode.ino,
+                    e
+                );
+            }
+        }
+        Ok(())
     }
 }
 
 impl Seek for DkFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        unimplemented!()
+        let new_pos = match pos {
+            SeekFrom::Start(pos) => pos as i64,
+            SeekFrom::Current(diff) => self.pos as i64 + diff,
+            SeekFrom::End(diff) => self.inode.size as i64 + diff,
+        };
+        if new_pos >= 0 {
+            self.pos = new_pos as u64;
+            Ok(self.pos)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Seeking to a negative offset",
+            ))
+        }
     }
 }
 

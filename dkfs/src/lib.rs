@@ -174,8 +174,6 @@ impl Deref for Handle {
     }
 }
 
-// Below are macros used in `impl Handle` to reduce characters.
-
 // Read a block
 macro_rules! rb {
     ($h:expr, $ptr:expr, $b:ty) => {
