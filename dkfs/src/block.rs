@@ -1,14 +1,14 @@
 use bincode::{deserialize_from, serialize};
-use std::io::{Read, self};
-use {DkResult, DkTimespec, FileMode};
+use std::io::{self, Read};
 use std::ops::Deref;
+use {DkResult, DkTimespec, FileMode};
 
 pub trait Block {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
-        where
-            Self: Sized;
+    where
+        Self: Sized;
 
-    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target=[u8]> + 'a>>;
+    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ macro_rules! impl_block {
                 Ok(deserialize_from(bytes)?)
             }
 
-            fn as_bytes(&self) -> DkResult<Box<Deref<Target=[u8]>>> {
+            fn as_bytes(&self) -> DkResult<Box<Deref<Target = [u8]>>> {
                 Ok(Box::new(serialize(&self)?))
             }
         }
@@ -82,13 +82,15 @@ impl_block!(FreeInode);
 impl_block!(Inode);
 
 impl Block for Data {
-    fn from_bytes<R: Read>(bytes: R) -> DkResult<Self> where
-        Self: Sized {
+    fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
+    where
+        Self: Sized,
+    {
         let v: Result<Vec<u8>, io::Error> = bytes.bytes().collect();
         Ok(Data(v?))
     }
 
-    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target=[u8]> + 'a>> {
+    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
         Ok(Box::new(&self.0[..]))
     }
 }

@@ -10,23 +10,33 @@ pub trait Device: Read + Write + Seek {
 
     fn block_size(&self) -> u64;
 
-    fn read_block<'a>(&'a mut self, bid: u64) -> DkResult<Box<dyn Read + 'a>> {
-        let (bc, bs) = (self.block_count(), self.block_size());
-        if bid >= bc {
-            Err(format_err!("Read block {} of {}", bid, bc))
+    fn size(&self) -> u64 {
+        self.block_size() * self.block_count()
+    }
+
+    fn read_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
+        let size = self.size();
+        if ptr >= size {
+            Err(format_err!("Read at {}, but device size is {}", ptr, size))
         } else {
-            self.seek(SeekFrom::Start(bid * bs))?;
-            Ok(Box::new(self.take(bs)))
+            self.seek(SeekFrom::Start(ptr))?;
+            Ok(Box::new(self))
         }
     }
 
-    fn write_block(&mut self, bid: u64, block: &Block) -> DkResult<()> {
-        let (bc, bs) = (self.block_count(), self.block_size());
-        if bid >= bc {
-            Err(format_err!("Write block {} of {}", bid, bc))
+    fn write_block_at(&mut self, block: &Block, ptr: u64) -> DkResult<()> {
+        let size = self.size();
+        let bytes = block.as_bytes()?;
+        let len = bytes.len() as u64;
+        if ptr + len >= size {
+            Err(format_err!(
+                "Write {} bytes at {}, but device size is {}",
+                len,
+                ptr,
+                size
+            ))
         } else {
-            self.seek(SeekFrom::Start(bid * bs))?;
-            let bytes = block.as_bytes()?;
+            self.seek(SeekFrom::Start(ptr))?;
             Ok(self.write_all(&bytes)?)
         }
     }
