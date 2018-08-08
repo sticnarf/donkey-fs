@@ -1,4 +1,4 @@
-//! Attention! This filesystem cannot run properly
+//! Attention! This filesystem does not work
 //! in a multi-threaded environment!
 #![feature(nll)]
 extern crate serde;
@@ -33,13 +33,7 @@ use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
-pub mod block;
-pub mod device;
-pub mod file;
-
-use block::FreeData;
-use block::FreeInode;
-use block::{Block, Inode, SuperBlock};
+use block::*;
 use device::Device;
 use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
 use std::cell::Ref;
@@ -84,7 +78,7 @@ impl Donkey {
 
         let block_size = dev.block_size();
         let inode_count = dev.size() / opts.bytes_per_inode;
-        let first_data_ptr = Donkey::first_data_ptr(inode_count, block_size);
+        let first_db_ptr = Donkey::first_db_ptr(inode_count, block_size);
 
         // No plan to implement a real boot block here.
 
@@ -94,26 +88,26 @@ impl Donkey {
             block_size,
             inode_count,
             used_inode_count: 0,
-            data_count: dev.block_count() - first_data_ptr / block_size,
-            used_data_count: 0,
-            free_inode_ptr: FIRST_INODE_PTR,
-            free_data_ptr: first_data_ptr,
+            db_count: dev.block_count() - first_db_ptr / block_size,
+            used_db_count: 0,
+            inode_fl_ptr: FIRST_INODE_PTR,
+            db_fl_ptr: first_db_ptr,
         };
         dev.write_block_at(&sb, SUPER_BLOCK_PTR)?;
 
         // Make the initial free inode
-        let fi = FreeInode {
-            next_free_ptr: 0,
-            free_count: inode_count,
+        let fi = FreeList {
+            next_ptr: 0,
+            size: inode_count * INODE_SIZE,
         };
         dev.write_block_at(&fi, FIRST_INODE_PTR)?;
 
         // Make the initial free data block
-        let fb = FreeData {
-            next_free_ptr: 0,
-            free_count: sb.data_count,
+        let fb = FreeList {
+            next_ptr: 0,
+            size: dev.size() - first_db_ptr,
         };
-        dev.write_block_at(&fb, first_data_ptr)?;
+        dev.write_block_at(&fb, first_db_ptr)?;
 
         let dk = Donkey::new(dev, sb);
         let handle = Handle::new(dk);
@@ -132,7 +126,7 @@ impl Donkey {
 
     /// We take care of block alignment here in case when
     /// the device itself is well aligned.
-    fn first_data_ptr(inode_count: u64, block_size: u64) -> u64 {
+    fn first_db_ptr(inode_count: u64, block_size: u64) -> u64 {
         let used_blocks =
             (FIRST_INODE_PTR + INODE_SIZE * inode_count + block_size - 1) / block_size;
         used_blocks * block_size
@@ -213,32 +207,46 @@ impl Handle {
         }
     }
 
+    fn block_size(&self) -> u64 {
+        sb!(self).block_size
+    }
+
     fn flush_sb(&self) -> DkResult<()> {
         wb!(self, sb!(self), SUPER_BLOCK_PTR)
     }
 
-    fn allocate_inode(&self) -> DkResult<u64> {
-        let fi_ptr = sb!(self).free_inode_ptr;
-        let fi = rb!(self, fi_ptr, FreeInode)?;
-        if fi.free_count > 1 {
-            // Split this free inode
-            let new_fi = FreeInode {
-                free_count: fi.free_count - 1,
-                next_free_ptr: fi.next_free_ptr,
+    /// Allocated a block of size `size` from `FreeList` at `ptr`.
+    /// Returns the pointer of the allocated block and the pointer
+    /// of the new `FreeList`.
+    fn allocate_from_free(&self, ptr: u64, size: u64) -> DkResult<(u64, u64)> {
+        let fl = rb!(self, ptr, FreeList)?;
+        if fl.size >= size {
+            // Split this free list
+            let new_fl = FreeList {
+                size: fl.size - size,
+                ..fl
             };
-            let new_fi_ptr = fi_ptr + INODE_SIZE;
-            wb!(self, new_fi, new_fi_ptr)?;
-        } else if fi.free_count == 1 {
-            sb!(self, mut).free_inode_ptr = fi.next_free_ptr;
+            let new_ptr = ptr + size;
+            wb!(self, new_fl, new_ptr)?;
+            Ok((ptr, new_ptr))
         } else {
-            return Err(format_err!(
-                "Bad free inode, free count = {}.",
-                fi.free_count
-            ));
+            self.allocate_from_free(fl.next_ptr, size)
         }
-        sb!(self, mut).used_inode_count += 1;
-        self.flush_sb()?;
-        Ok(Inode::ino(fi_ptr))
+    }
+
+    /// Returns the inode number of the allocated inode
+    fn allocate_inode(&self) -> DkResult<u64> {
+        let sb = &sb!(self);
+        if sb.used_inode_count < sb.inode_count {
+            let fl_ptr = sb!(self).inode_fl_ptr;
+            let (fi_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, INODE_SIZE)?;
+            sb!(self, mut).inode_fl_ptr = new_fl_ptr;
+            sb!(self, mut).used_inode_count += 1;
+            self.flush_sb()?;
+            Ok(Inode::ino(fi_ptr))
+        } else {
+            Err(format_err!("Inodes are used up!"))
+        }
     }
 
     fn read_inode(&self, ino: u64) -> DkResult<Inode> {
@@ -247,6 +255,26 @@ impl Handle {
 
     fn write_inode(&self, inode: &Inode) -> DkResult<()> {
         wb!(self, *inode, inode.ptr())
+    }
+
+    /// Returns the pointer of the allocated data block
+    fn allocate_db(&self) -> DkResult<u64> {
+        let sb = &sb!(self);
+        if sb.used_db_count < sb.db_count {
+            let fl_ptr = sb!(self).db_fl_ptr;
+            let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, self.block_size())?;
+            sb!(self, mut).db_fl_ptr = new_fl_ptr;
+            sb!(self, mut).used_db_count += 1;
+            self.flush_sb()?;
+            Ok(fd_ptr)
+        } else {
+            Err(format_err!("Data blocks are used up!"))
+        }
+    }
+
+    fn fill_zero(&self, ptr: u64, size: u64) -> DkResult<()> {
+        let b = DataBlock(vec![0; size as usize]);
+        wb!(self, b, ptr)
     }
 
     /// Returns the inode number of the new node.
@@ -302,12 +330,7 @@ impl Handle {
             }
             hash_map::Entry::Vacant(e) => {
                 let inode = self.read_inode(ino)?;
-                let f = DkFile {
-                    handle: self.clone(),
-                    inode,
-                    pos: 0,
-                    dirty: false,
-                };
+                let f = DkFile::new(self.clone(), inode);
                 let rc = Rc::new(RefCell::new(f));
                 e.insert(Rc::downgrade(&rc));
                 rc
@@ -454,6 +477,10 @@ bitflags! {
         const APPEND           = 0b00000100_00000000;
     }
 }
+
+pub mod block;
+pub mod device;
+pub mod file;
 
 #[cfg(test)]
 mod tests {}

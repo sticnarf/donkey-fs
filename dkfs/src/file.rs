@@ -1,16 +1,18 @@
-use super::*;
 use bincode::{deserialize_from, serialize_into};
+use block::*;
 use im::hashmap::{self as im_hashmap, HashMap as ImHashMap};
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::{DerefMut, Drop};
 use std::rc::Rc;
+use *;
 
 #[derive(Debug)]
 pub struct DkFile {
     pub(crate) handle: Handle,
     pub(crate) inode: Inode,
+    ind_ptr_cm: IndirectPtrCacheManager,
     pub(crate) pos: u64,
     pub(crate) dirty: bool,
 }
@@ -72,8 +74,108 @@ impl Drop for DkFile {
 }
 
 impl DkFile {
-    fn log(&self) -> Option<Logger> {
+    pub fn new(handle: Handle, inode: Inode) -> Self {
+        DkFile {
+            handle,
+            inode,
+            ind_ptr_cm: Default::default(),
+            pos: 0,
+            dirty: false,
+        }
+    }
+
+    pub fn log(&self) -> Option<Logger> {
         self.handle.log.clone()
+    }
+
+    /// Specify the position of the file.
+    /// Returns the real pointer and how many bytes in maximum
+    /// you can read or write from this pointer.
+    /// This function allocates blocks if necessary.
+    fn locate(&mut self, pos: u64) -> DkResult<(u64, u64)> {
+        fn locate_rec(
+            handle: Handle,
+            cache: &mut IndirectPtrCacheManager,
+            ptrs: &mut [u64],
+            level: u32,
+            off: u64,
+            bs: u64,
+        ) -> DkResult<(u64, u64)> {
+            fn ptr_or_allocate(handle: Handle, ptr: &mut u64, bs: u64) -> DkResult<u64> {
+                if *ptr == 0 {
+                    *ptr = handle.allocate_db()?;
+                    handle.fill_zero(*ptr, bs)?;
+                }
+                Ok(*ptr)
+            }
+
+            let pc = bs / 8; // Pointer count in a single block
+            let sz = bs * pc.pow(level); // Size of all blocks through the direct or indirect pointer
+            let ptr = ptr_or_allocate(handle.clone(), &mut ptrs[(off / sz) as usize], bs)?;
+            if level == 0 {
+                Ok((ptr + off, bs - off))
+            } else {
+                let ind = cache.get(handle, ptr, level)?;
+                unimplemented!()
+            }
+        }
+
+        let bs = self.handle.borrow().sb.block_size;
+        let ptrs = &mut self.inode.ptrs;
+        let (level, off) = ptrs.locate(pos, bs);
+        locate_rec(
+            self.handle.clone(),
+            &mut self.ind_ptr_cm,
+            &mut self.inode.ptrs[level],
+            level,
+            off,
+            bs,
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct IndirectPtrCacheManager([Option<IndirectPtrCache>; 4]);
+
+impl IndirectPtrCacheManager {
+    fn get(&mut self, handle: Handle, ptr: u64, level: u32) -> DkResult<&mut DataBlock> {
+        let level = level as usize;
+        match &mut self.0[level] {
+            Some(c) if c.ptr == ptr => Ok(&mut c.data),
+            r => {
+                let data = rb!(handle, ptr, DataBlock)?;
+                *r = Some(IndirectPtrCache {
+                    handle,
+                    ptr,
+                    data,
+                    dirty: false,
+                });
+                Ok(&mut r.as_mut().unwrap().data)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IndirectPtrCache {
+    handle: Handle,
+    ptr: u64,
+    data: DataBlock,
+    dirty: bool,
+}
+
+impl Drop for IndirectPtrCache {
+    fn drop(&mut self) {
+        if self.dirty {
+            if let Err(e) = wb!(self.handle, self.data, self.ptr) {
+                try_error!(
+                    self.handle.log,
+                    "Failed to write data block at {}: {}",
+                    self.ptr,
+                    e
+                );
+            }
+        }
     }
 }
 
