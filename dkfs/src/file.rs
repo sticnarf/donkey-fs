@@ -1,8 +1,10 @@
 use bincode::{deserialize_from, serialize_into};
 use block::*;
 use im::hashmap::{self as im_hashmap, HashMap as ImHashMap};
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::OsString;
+use std::fmt::{self, Debug, Formatter};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::{DerefMut, Drop};
 use std::rc::Rc;
@@ -95,7 +97,7 @@ impl DkFile {
     fn locate(&mut self, pos: u64) -> DkResult<(u64, u64)> {
         fn locate_rec(
             handle: Handle,
-            cache: &mut IndirectPtrCacheManager,
+            cache: IndirectPtrCacheManager,
             ptrs: &mut [u64],
             level: u32,
             off: u64,
@@ -109,14 +111,17 @@ impl DkFile {
                 Ok(*ptr)
             }
 
-            let pc = bs / 8; // Pointer count in a single block
-            let sz = bs * pc.pow(level); // Size of all blocks through the direct or indirect pointer
-            let ptr = ptr_or_allocate(handle.clone(), &mut ptrs[(off / sz) as usize], bs)?;
+            let pc = bs / 8; // pointer count in a single block
+            let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
+            let i = off / sz; // index in the current level
+            let block_off = off % sz;
+            let ptr = ptr_or_allocate(handle.clone(), &mut ptrs[i as usize], bs)?;
             if level == 0 {
-                Ok((ptr + off, bs - off))
+                Ok((ptr + block_off, bs - block_off))
             } else {
-                let ind = cache.get(handle, ptr, level)?;
-                unimplemented!()
+                let mut ind = cache.get(handle.clone(), ptr, level)?;
+                let ptrs = &mut ind.cache.as_mut().unwrap().pb[..];
+                locate_rec(handle, cache, ptrs, level - 1, block_off, bs)
             }
         }
 
@@ -125,7 +130,7 @@ impl DkFile {
         let (level, off) = ptrs.locate(pos, bs);
         locate_rec(
             self.handle.clone(),
-            &mut self.ind_ptr_cm,
+            self.ind_ptr_cm.clone(),
             &mut self.inode.ptrs[level],
             level,
             off,
@@ -134,25 +139,51 @@ impl DkFile {
     }
 }
 
-#[derive(Debug, Default)]
-struct IndirectPtrCacheManager([Option<IndirectPtrCache>; 4]);
+#[derive(Default, Clone)]
+struct IndirectPtrCacheManager(Rc<RefCell<[Cell<Option<IndirectPtrCache>>; 4]>>);
+
+impl Debug for IndirectPtrCacheManager {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        // Content is ignored because `IndirectPtrCache` is not `Copy`.
+        write!(f, "IndirectPtrCacheManager {{..}}")
+    }
+}
 
 impl IndirectPtrCacheManager {
-    fn get(&mut self, handle: Handle, ptr: u64, level: u32) -> DkResult<&mut DataBlock> {
+    fn get(&self, handle: Handle, ptr: u64, level: u32) -> DkResult<IndirectPtrCacheHandle> {
         let level = level as usize;
-        match &mut self.0[level] {
-            Some(c) if c.ptr == ptr => Ok(&mut c.data),
-            r => {
-                let data = rb!(handle, ptr, DataBlock)?;
-                *r = Some(IndirectPtrCache {
-                    handle,
-                    ptr,
-                    data,
-                    dirty: false,
-                });
-                Ok(&mut r.as_mut().unwrap().data)
+        let res = self.0.borrow()[level].replace(None);
+        // Hope there is `if let &&` syntax :(
+        let cache = if res.is_some() && res.as_ref().unwrap().ptr == ptr {
+            res.unwrap()
+        } else {
+            let pb = rb!(handle, ptr, PtrBlock)?;
+            IndirectPtrCache {
+                handle,
+                ptr,
+                pb,
+                dirty: false,
             }
-        }
+        };
+        Ok(IndirectPtrCacheHandle {
+            cm: self.clone(),
+            level,
+            cache: Some(cache),
+        })
+    }
+}
+
+struct IndirectPtrCacheHandle {
+    cm: IndirectPtrCacheManager,
+    level: usize,
+    // `cache` is ensured to be Some(..) before dropped
+    cache: Option<IndirectPtrCache>,
+}
+
+impl Drop for IndirectPtrCacheHandle {
+    fn drop(&mut self) {
+        let cache = std::mem::replace(&mut self.cache, None);
+        self.cm.0.borrow()[self.level].set(cache);
     }
 }
 
@@ -160,14 +191,14 @@ impl IndirectPtrCacheManager {
 struct IndirectPtrCache {
     handle: Handle,
     ptr: u64,
-    data: DataBlock,
+    pb: PtrBlock,
     dirty: bool,
 }
 
 impl Drop for IndirectPtrCache {
     fn drop(&mut self) {
         if self.dirty {
-            if let Err(e) = wb!(self.handle, self.data, self.ptr) {
+            if let Err(e) = wb!(self.handle, self.pb, self.ptr) {
                 try_error!(
                     self.handle.log,
                     "Failed to write data block at {}: {}",

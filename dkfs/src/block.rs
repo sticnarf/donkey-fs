@@ -1,7 +1,8 @@
 use super::*;
 use bincode::{deserialize_from, serialize};
+use byteorder::{ByteOrder, LE};
 use std::io::{self, Read};
-use std::ops::{Deref, Index, IndexMut};
+use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 pub trait Block {
     /// Do necessary validation.
@@ -141,8 +142,25 @@ impl InodePtrs {
     }
 }
 
-#[derive(Debug)]
-pub struct DataBlock(pub Vec<u8>);
+#[derive(Debug, PartialEq)]
+pub struct RegularBlock<T>(pub Vec<T>);
+
+impl<T> Deref for RegularBlock<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Vec<T> {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for RegularBlock<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        &mut self.0
+    }
+}
+
+pub type DataBlock = RegularBlock<u8>;
+pub type PtrBlock = RegularBlock<u64>;
 
 macro_rules! impl_block {
     ($b:ty$(; validation: $f:ident)*) => {
@@ -179,11 +197,29 @@ impl Block for DataBlock {
         Self: Sized,
     {
         let v: Result<Vec<u8>, io::Error> = bytes.bytes().collect();
-        Ok(DataBlock(v?))
+        Ok(RegularBlock(v?))
     }
 
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
-        Ok(Box::new(&self.0[..]))
+        Ok(Box::new(&self[..]))
+    }
+}
+
+impl Block for PtrBlock {
+    fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
+    where
+        Self: Sized,
+    {
+        let bytes = bytes.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
+        let mut v = vec![0; bytes.len() / 8];
+        LE::read_u64_into(&bytes[..], &mut v[..]);
+        Ok(RegularBlock(v))
+    }
+
+    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
+        let mut v = vec![0; self.len() * 8];
+        LE::write_u64_into(&self[..], &mut v[..]);
+        Ok(Box::new(v))
     }
 }
 
@@ -203,5 +239,14 @@ mod tests {
         assert_eq!(p.locate(550831702015, 4096), (3, 549755813887));
         assert_eq!(p.locate(550831702016, 4096), (4, 0));
         assert_eq!(p.locate(282025808412671, 4096), (4, 281474976710655));
+    }
+
+    #[test]
+    fn serde_ptr_block() -> DkResult<()> {
+        let pb: PtrBlock = RegularBlock((512..1024).collect());
+        let bytes: Vec<u8> = pb.as_bytes()?.iter().map(|&x| x).collect();
+        let pb2 = PtrBlock::from_bytes(&bytes[..])?;
+        assert_eq!(pb, pb2);
+        Ok(())
     }
 }

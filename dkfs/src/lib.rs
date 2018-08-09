@@ -17,6 +17,7 @@ extern crate nix;
 extern crate slog;
 #[macro_use]
 extern crate slog_try;
+extern crate byteorder;
 extern crate im;
 
 use failure::Error;
@@ -273,7 +274,7 @@ impl Handle {
     }
 
     fn fill_zero(&self, ptr: u64, size: u64) -> DkResult<()> {
-        let b = DataBlock(vec![0; size as usize]);
+        let b = RegularBlock(vec![0u8; size as usize]);
         wb!(self, b, ptr)
     }
 
