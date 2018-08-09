@@ -3,6 +3,7 @@ use block::*;
 use im::hashmap::{self as im_hashmap, HashMap as ImHashMap};
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::cmp::min;
 use std::ffi::OsString;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -14,20 +15,26 @@ use *;
 pub struct DkFile {
     pub(crate) handle: Handle,
     pub(crate) inode: Inode,
-    ind_ptr_cm: IndirectPtrCacheManager,
     pub(crate) pos: u64,
     pub(crate) dirty: bool,
+    ind_ptr_cm: IndirectPtrCacheManager,
 }
 
 impl Read for DkFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        unimplemented!()
+        match self.dk_read(buf) {
+            Ok(len) => Ok(len),
+            Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
+        }
     }
 }
 
 impl Write for DkFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        unimplemented!()
+        match self.dk_write(buf) {
+            Ok(len) => Ok(len),
+            Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -137,6 +144,19 @@ impl DkFile {
             bs,
         )
     }
+
+    fn dk_read(&mut self, buf: &mut [u8]) -> DkResult<usize> {
+        let (ptr, len) = self.locate(self.pos)?;
+        let len = min(len as usize, buf.len());
+        Ok(self.handle.read_into(ptr, &mut buf[..len])? as usize)
+    }
+
+    fn dk_write(&mut self, buf: &[u8]) -> DkResult<usize> {
+        let (ptr, len) = self.locate(self.pos)?;
+        let len = min(len as usize, buf.len());
+        self.handle.write(ptr, &RefData(&buf[..len]))?;
+        Ok(len)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -157,7 +177,7 @@ impl IndirectPtrCacheManager {
         let cache = if res.is_some() && res.as_ref().unwrap().ptr == ptr {
             res.unwrap()
         } else {
-            let pb = rb!(handle, ptr, PtrBlock)?;
+            let pb = handle.read(ptr)?;
             IndirectPtrCache {
                 handle,
                 ptr,
@@ -198,7 +218,7 @@ struct IndirectPtrCache {
 impl Drop for IndirectPtrCache {
     fn drop(&mut self) {
         if self.dirty {
-            if let Err(e) = wb!(self.handle, self.pb, self.ptr) {
+            if let Err(e) = self.handle.write(self.ptr, &self.pb) {
                 try_error!(
                     self.handle.log,
                     "Failed to write data block at {}: {}",

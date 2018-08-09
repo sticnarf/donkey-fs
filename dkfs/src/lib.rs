@@ -25,7 +25,7 @@ use slog::Logger;
 use std::cmp::min;
 use std::ffi::{OsStr, OsString};
 use std::fs::*;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Drop;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -40,7 +40,7 @@ use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::hash_map::{self, HashMap};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 
 const BOOT_BLOCK_SIZE: u64 = 1024;
@@ -94,21 +94,21 @@ impl Donkey {
             inode_fl_ptr: FIRST_INODE_PTR,
             db_fl_ptr: first_db_ptr,
         };
-        dev.write_block_at(&sb, SUPER_BLOCK_PTR)?;
+        dev.write_at(&sb, SUPER_BLOCK_PTR)?;
 
         // Make the initial free inode
         let fi = FreeList {
             next_ptr: 0,
             size: inode_count * INODE_SIZE,
         };
-        dev.write_block_at(&fi, FIRST_INODE_PTR)?;
+        dev.write_at(&fi, FIRST_INODE_PTR)?;
 
         // Make the initial free data block
         let fb = FreeList {
             next_ptr: 0,
             size: dev.size() - first_db_ptr,
         };
-        dev.write_block_at(&fb, first_db_ptr)?;
+        dev.write_at(&fb, first_db_ptr)?;
 
         let dk = Donkey::new(dev, sb);
         let handle = Handle::new(dk);
@@ -169,30 +169,6 @@ impl Deref for Handle {
     }
 }
 
-// Read a block
-macro_rules! rb {
-    ($h:expr, $ptr:expr, $b:ty) => {
-        <$b as Block>::from_bytes($h.borrow_mut().dev.read_at($ptr)?)
-    };
-}
-
-// Write a block
-macro_rules! wb {
-    ($h:expr, $b:expr, $ptr:expr) => {
-        $h.borrow_mut().dev.write_block_at(&$b, $ptr)
-    };
-}
-
-// Access the super block
-macro_rules! sb {
-    ($h:expr) => {
-        $h.borrow().sb
-    };
-    ($h:expr, mut) => {
-        $h.borrow_mut().sb
-    };
-}
-
 impl Handle {
     fn new(dk: Donkey) -> Self {
         Handle {
@@ -208,19 +184,34 @@ impl Handle {
         }
     }
 
+    fn read_into(&self, ptr: u64, mut dst: &mut [u8]) -> DkResult<u64> {
+        Ok(io::copy(
+            &mut self.borrow_mut().dev.read_len_at(ptr, dst.len() as u64)?,
+            &mut dst,
+        )?)
+    }
+
+    fn read<T: Readable>(&self, ptr: u64) -> DkResult<T> {
+        <T as Readable>::from_bytes(self.borrow_mut().dev.read_at(ptr)?)
+    }
+
+    fn write(&self, ptr: u64, writable: &Writable) -> DkResult<()> {
+        self.borrow_mut().dev.write_at(writable, ptr)
+    }
+
     fn block_size(&self) -> u64 {
-        sb!(self).block_size
+        self.borrow().sb.block_size
     }
 
     fn flush_sb(&self) -> DkResult<()> {
-        wb!(self, sb!(self), SUPER_BLOCK_PTR)
+        self.write(SUPER_BLOCK_PTR, &self.borrow().sb)
     }
 
     /// Allocated a block of size `size` from `FreeList` at `ptr`.
     /// Returns the pointer of the allocated block and the pointer
     /// of the new `FreeList`.
     fn allocate_from_free(&self, ptr: u64, size: u64) -> DkResult<(u64, u64)> {
-        let fl = rb!(self, ptr, FreeList)?;
+        let fl: FreeList = self.read(ptr)?;
         if fl.size >= size {
             // Split this free list
             let new_fl = FreeList {
@@ -228,7 +219,7 @@ impl Handle {
                 ..fl
             };
             let new_ptr = ptr + size;
-            wb!(self, new_fl, new_ptr)?;
+            self.write(new_ptr, &new_fl)?;
             Ok((ptr, new_ptr))
         } else {
             self.allocate_from_free(fl.next_ptr, size)
@@ -237,12 +228,12 @@ impl Handle {
 
     /// Returns the inode number of the allocated inode
     fn allocate_inode(&self) -> DkResult<u64> {
-        let sb = &sb!(self);
+        let sb = &self.borrow().sb;
         if sb.used_inode_count < sb.inode_count {
-            let fl_ptr = sb!(self).inode_fl_ptr;
+            let fl_ptr = self.borrow().sb.inode_fl_ptr;
             let (fi_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, INODE_SIZE)?;
-            sb!(self, mut).inode_fl_ptr = new_fl_ptr;
-            sb!(self, mut).used_inode_count += 1;
+            self.borrow_mut().sb.inode_fl_ptr = new_fl_ptr;
+            self.borrow_mut().sb.used_inode_count += 1;
             self.flush_sb()?;
             Ok(Inode::ino(fi_ptr))
         } else {
@@ -251,21 +242,21 @@ impl Handle {
     }
 
     fn read_inode(&self, ino: u64) -> DkResult<Inode> {
-        rb!(self, ino, Inode)
+        self.read(ino)
     }
 
     fn write_inode(&self, inode: &Inode) -> DkResult<()> {
-        wb!(self, *inode, inode.ptr())
+        self.write(inode.ptr(), inode)
     }
 
     /// Returns the pointer of the allocated data block
     fn allocate_db(&self) -> DkResult<u64> {
-        let sb = &sb!(self);
+        let sb = &self.borrow().sb;
         if sb.used_db_count < sb.db_count {
-            let fl_ptr = sb!(self).db_fl_ptr;
+            let fl_ptr = self.borrow().sb.db_fl_ptr;
             let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, self.block_size())?;
-            sb!(self, mut).db_fl_ptr = new_fl_ptr;
-            sb!(self, mut).used_db_count += 1;
+            self.borrow_mut().sb.db_fl_ptr = new_fl_ptr;
+            self.borrow_mut().sb.used_db_count += 1;
             self.flush_sb()?;
             Ok(fd_ptr)
         } else {
@@ -274,8 +265,9 @@ impl Handle {
     }
 
     fn fill_zero(&self, ptr: u64, size: u64) -> DkResult<()> {
-        let b = RegularBlock(vec![0u8; size as usize]);
-        wb!(self, b, ptr)
+        let v = vec![0u8; size as usize];
+        let b = RefData(v.as_slice());
+        self.write(ptr, &b)
     }
 
     /// Returns the inode number of the new node.

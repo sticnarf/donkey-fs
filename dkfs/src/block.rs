@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, LE};
 use std::io::{self, Read};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 
-pub trait Block {
+pub trait Readable {
     /// Do necessary validation.
     /// Used in `from_bytes` after deserialization.
     fn validate(&self) -> DkResult<()> {
@@ -14,7 +14,9 @@ pub trait Block {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
     where
         Self: Sized;
+}
 
+pub trait Writable {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>>;
 }
 
@@ -143,9 +145,9 @@ impl InodePtrs {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct RegularBlock<T>(pub Vec<T>);
+pub struct Data<T>(pub Vec<T>);
 
-impl<T> Deref for RegularBlock<T> {
+impl<T> Deref for Data<T> {
     type Target = Vec<T>;
 
     fn deref(&self) -> &Vec<T> {
@@ -153,18 +155,20 @@ impl<T> Deref for RegularBlock<T> {
     }
 }
 
-impl<T> DerefMut for RegularBlock<T> {
+impl<T> DerefMut for Data<T> {
     fn deref_mut(&mut self) -> &mut Vec<T> {
         &mut self.0
     }
 }
 
-pub type DataBlock = RegularBlock<u8>;
-pub type PtrBlock = RegularBlock<u64>;
+pub type ByteData = Data<u8>;
+pub type PtrBlock = Data<u64>;
+
+pub struct RefData<'a>(pub &'a [u8]);
 
 macro_rules! impl_block {
     ($b:ty$(; validation: $f:ident)*) => {
-        impl Block for $b {
+        impl Readable for $b {
             fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
             where
                 Self: Sized,
@@ -174,15 +178,17 @@ macro_rules! impl_block {
                 Ok(b)
             }
 
-            fn as_bytes(&self) -> DkResult<Box<Deref<Target = [u8]>>> {
-                Ok(Box::new(serialize(&self)?))
-            }
-
             $(
             fn validate(&self) -> DkResult<()> {
                 $f(self)
             }
             )*
+        }
+
+        impl Writable for $b {
+            fn as_bytes(&self) -> DkResult<Box<Deref<Target = [u8]>>> {
+                Ok(Box::new(serialize(&self)?))
+            }
         }
     };
 }
@@ -191,21 +197,23 @@ impl_block!(SuperBlock; validation: sbv);
 impl_block!(FreeList);
 impl_block!(Inode; validation: inv);
 
-impl Block for DataBlock {
+impl Readable for ByteData {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
     where
         Self: Sized,
     {
         let v: Result<Vec<u8>, io::Error> = bytes.bytes().collect();
-        Ok(RegularBlock(v?))
+        Ok(Data(v?))
     }
+}
 
+impl Writable for ByteData {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
         Ok(Box::new(&self[..]))
     }
 }
 
-impl Block for PtrBlock {
+impl Readable for PtrBlock {
     fn from_bytes<R: Read>(bytes: R) -> DkResult<Self>
     where
         Self: Sized,
@@ -213,13 +221,21 @@ impl Block for PtrBlock {
         let bytes = bytes.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
         let mut v = vec![0; bytes.len() / 8];
         LE::read_u64_into(&bytes[..], &mut v[..]);
-        Ok(RegularBlock(v))
+        Ok(Data(v))
     }
+}
 
+impl Writable for PtrBlock {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
         let mut v = vec![0; self.len() * 8];
         LE::write_u64_into(&self[..], &mut v[..]);
         Ok(Box::new(v))
+    }
+}
+
+impl<'b> Writable for RefData<'b> {
+    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
+        Ok(Box::new(self.0))
     }
 }
 
@@ -243,7 +259,7 @@ mod tests {
 
     #[test]
     fn serde_ptr_block() -> DkResult<()> {
-        let pb: PtrBlock = RegularBlock((512..1024).collect());
+        let pb: PtrBlock = Data((512..1024).collect());
         let bytes: Vec<u8> = pb.as_bytes()?.iter().map(|&x| x).collect();
         let pb2 = PtrBlock::from_bytes(&bytes[..])?;
         assert_eq!(pb, pb2);

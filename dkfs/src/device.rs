@@ -1,5 +1,4 @@
 use super::*;
-use block::Block;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -16,6 +15,7 @@ pub trait Device: Read + Write + Seek + Debug {
         self.block_size() * self.block_count()
     }
 
+    /// No length limit
     fn read_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
         if ptr >= size {
@@ -26,9 +26,30 @@ pub trait Device: Read + Write + Seek + Debug {
         }
     }
 
-    fn write_block_at(&mut self, block: &Block, ptr: u64) -> DkResult<()> {
+    /// Limit length to `len`
+    fn read_len_at<'a>(&'a mut self, ptr: u64, len: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
-        let bytes = block.as_bytes()?;
+        if ptr + len >= size {
+            Err(format_err!(
+                "Read {} bytes at {}, but device size is {}",
+                len,
+                ptr,
+                size
+            ))
+        } else {
+            self.seek(SeekFrom::Start(ptr))?;
+            Ok(Box::new(self.take(len)))
+        }
+    }
+
+    /// Limit length to one block size
+    fn read_block_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
+        self.read_len_at(ptr, self.block_size())
+    }
+
+    fn write_at(&mut self, writable: &Writable, ptr: u64) -> DkResult<()> {
+        let size = self.size();
+        let bytes = writable.as_bytes()?;
         let len = bytes.len() as u64;
         if ptr + len >= size {
             Err(format_err!(
