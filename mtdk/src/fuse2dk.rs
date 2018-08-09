@@ -1,8 +1,6 @@
 use dkfs::*;
 use libc::*;
-
-type DkTimespec = ::dkfs::Timespec;
-type TmTimespec = ::time::Timespec;
+use time::Timespec;
 
 pub fn file_mode(mode: u32) -> FileMode {
     let mut res = FileMode::empty();
@@ -62,28 +60,28 @@ pub fn file_mode(mode: u32) -> FileMode {
     res
 }
 
-pub fn open_flags(flags: u32) -> OpenFlags {
-    let mut res = OpenFlags::empty();
+pub fn flags(flags: u32) -> Flags {
+    let mut res = Flags::empty();
 
     let access_flags = (flags as c_int) & O_ACCMODE;
     match access_flags {
-        O_RDONLY => res |= OpenFlags::READ_ONLY,
-        O_WRONLY => res |= OpenFlags::WRITE_ONLY,
-        O_RDWR => res |= OpenFlags::READ_WRITE,
+        O_RDONLY => res |= Flags::READ_ONLY,
+        O_WRONLY => res |= Flags::WRITE_ONLY,
+        O_RDWR => res |= Flags::READ_WRITE,
         _ => unreachable!(),
     }
 
     let flags = flags as c_int;
     if (flags & O_APPEND) != 0 {
-        res |= OpenFlags::APPEND;
+        res |= Flags::APPEND;
     }
 
     res
 }
 
-pub fn timespec(t: TmTimespec) -> DkTimespec {
+pub fn timespec(t: Timespec) -> DkTimespec {
     DkTimespec {
         sec: t.sec,
-        nsec: t.nsec as i64,
+        nsec: t.nsec as u32,
     }
 }

@@ -1,20 +1,18 @@
 use dkfs::*;
 use fuse::*;
 use libc::*;
-
-type DkTimespec = ::dkfs::Timespec;
-type TmTimespec = ::time::Timespec;
-
-type DkFileAttr = ::dkfs::FileAttr;
-type FuseFileAttr = ::fuse::FileAttr;
+use time::Timespec;
 
 pub fn file_type(mode: FileMode) -> FileType {
-    if is_directory(mode) {
-        FileType::Directory
-    } else if is_regular_file(mode) {
-        FileType::RegularFile
-    } else {
-        unimplemented!()
+    match mode & FileMode::FILE_TYPE_MASK {
+        FileMode::REGULAR_FILE => FileType::RegularFile,
+        FileMode::SOCKET => FileType::Socket,
+        FileMode::DIRECTORY => FileType::Directory,
+        FileMode::SYMBOLIC_LINK => FileType::Symlink,
+        FileMode::CHARACTER_DEVICE => FileType::CharDevice,
+        FileMode::BLOCK_DEVICE => FileType::BlockDevice,
+        FileMode::FIFO => FileType::NamedPipe,
+        _ => unreachable!(),
     }
 }
 
@@ -22,42 +20,23 @@ pub fn permission(mode: FileMode) -> u16 {
     0o777 & mode.bits() as u16
 }
 
-pub fn timespec(t: DkTimespec) -> TmTimespec {
-    TmTimespec {
+pub fn timespec(t: DkTimespec) -> Timespec {
+    Timespec {
         sec: t.sec,
         nsec: t.nsec as i32,
     }
 }
 
-pub fn attr(attr: DkFileAttr, ino: u64) -> FuseFileAttr {
-    FuseFileAttr {
-        ino,
-        size: attr.size,
-        blocks: (attr.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
-        atime: timespec(attr.atime),
-        mtime: timespec(attr.mtime),
-        ctime: timespec(attr.ctime),
-        crtime: timespec(attr.crtime),
-        kind: file_type(attr.mode),
-        perm: permission(attr.mode),
-        nlink: attr.nlink as u32,
-        uid: attr.uid,
-        gid: attr.gid,
-        rdev: attr.rdev as u32,
-        flags: 0,
-    }
-}
-
-pub fn open_flags(flags: OpenFlags) -> u32 {
-    let access_flags = flags & OpenFlags::ACCESS_MODE_MASK;
+pub fn flags(flags: Flags) -> u32 {
+    let access_flags = flags & Flags::ACCESS_MODE_MASK;
     let mut res = match access_flags {
-        OpenFlags::READ_ONLY => O_RDONLY,
-        OpenFlags::WRITE_ONLY => O_WRONLY,
-        OpenFlags::READ_WRITE => O_RDWR,
+        Flags::READ_ONLY => O_RDONLY,
+        Flags::WRITE_ONLY => O_WRONLY,
+        Flags::READ_WRITE => O_RDWR,
         _ => unreachable!(),
     };
 
-    if flags.contains(OpenFlags::APPEND) {
+    if flags.contains(Flags::APPEND) {
         res |= O_APPEND;
     }
 

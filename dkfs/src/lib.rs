@@ -39,9 +39,7 @@ const INODE_SIZE: u64 = 256;
 const BOOT_BLOCK_PTR: u64 = 0;
 const SUPER_BLOCK_PTR: u64 = BOOT_BLOCK_PTR + BOOT_BLOCK_SIZE;
 const FIRST_INODE_PTR: u64 = SUPER_BLOCK_PTR + SUPER_BLOCK_SIZE;
-
 pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
-pub const DEFAULT_BYTES_PER_INODE_STR: &'static str = "16384";
 /// This cannot be a very small integer. Inode numbers of
 /// small integers are reserved for special use.
 pub const ROOT_INODE: u64 = 114514;

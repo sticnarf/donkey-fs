@@ -24,14 +24,14 @@ pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SuperBlock {
-    pub(crate) magic_number: u64,
-    pub(crate) block_size: u64,
-    pub(crate) inode_count: u64,
-    pub(crate) used_inode_count: u64,
-    pub(crate) db_count: u64,
-    pub(crate) used_db_count: u64,
-    pub(crate) inode_fl_ptr: u64,
-    pub(crate) db_fl_ptr: u64,
+    pub magic_number: u64,
+    pub block_size: u64,
+    pub inode_count: u64,
+    pub used_inode_count: u64,
+    pub db_count: u64,
+    pub used_db_count: u64,
+    pub inode_fl_ptr: u64,
+    pub db_fl_ptr: u64,
 }
 
 /// Validates `SuperBlock`.
@@ -47,27 +47,27 @@ fn sbv(sb: &SuperBlock) -> DkResult<()> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FreeList {
-    pub(crate) next_ptr: u64,
+    pub next_ptr: u64,
     /// Size of this free node
-    pub(crate) size: u64,
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Inode {
-    pub(crate) ino: u64,
-    pub(crate) mode: FileMode,
-    pub(crate) uid: u32,
-    pub(crate) gid: u32,
-    pub(crate) nlink: u64,
-    pub(crate) atime: DkTimespec,
-    pub(crate) mtime: DkTimespec,
-    pub(crate) ctime: DkTimespec,
-    pub(crate) crtime: DkTimespec,
+    pub ino: u64,
+    pub mode: FileMode,
+    pub uid: u32,
+    pub gid: u32,
+    pub nlink: u64,
+    pub atime: DkTimespec,
+    pub mtime: DkTimespec,
+    pub ctime: DkTimespec,
+    pub crtime: DkTimespec,
     /// valid for non-device files
-    pub(crate) size: u64,
+    pub size: u64,
     /// valid for device special files
-    pub(crate) device: u64,
-    pub(crate) ptrs: InodePtrs,
+    pub device: u64,
+    pub ptrs: InodePtrs,
 }
 
 fn inv(inode: &Inode) -> DkResult<()> {

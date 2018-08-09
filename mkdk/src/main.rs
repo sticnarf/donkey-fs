@@ -7,6 +7,7 @@ use dkfs::*;
 fn main() -> DkResult<()> {
     use clap::*;
 
+    let bpi = format!("{}", DEFAULT_BYTES_PER_INODE);
     let matches = App::new("mkdk")
         .version("0.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
@@ -15,15 +16,13 @@ fn main() -> DkResult<()> {
             Arg::with_name("device")
                 .help("Path to the device to be used")
                 .required(true),
-        )
-        .arg(
+        ).arg(
             Arg::with_name("bytes-per-inode")
                 .help("Specify the bytes/inode ratio")
                 .short("i")
                 .takes_value(true)
-                .default_value(DEFAULT_BYTES_PER_INODE_STR),
-        )
-        .get_matches();
+                .default_value(&bpi),
+        ).get_matches();
 
     let dev_path = matches.value_of("device").unwrap();
     let bytes_per_inode =
