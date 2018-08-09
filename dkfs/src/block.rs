@@ -20,7 +20,7 @@ pub trait Writable {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>>;
 }
 
-pub const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
+pub(crate) const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SuperBlock {

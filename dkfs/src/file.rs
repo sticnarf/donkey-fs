@@ -83,7 +83,7 @@ impl Drop for DkFile {
 }
 
 impl DkFile {
-    pub fn new(handle: Handle, inode: Inode) -> Self {
+    pub(crate) fn new(handle: Handle, inode: Inode) -> Self {
         DkFile {
             handle,
             inode,
@@ -93,7 +93,7 @@ impl DkFile {
         }
     }
 
-    pub fn log(&self) -> Option<Logger> {
+    pub(crate) fn log(&self) -> Option<Logger> {
         self.handle.log.clone()
     }
 
@@ -252,7 +252,7 @@ pub struct DkDir {
 }
 
 impl DkDir {
-    pub fn from_file(fh: DkFileHandle) -> DkResult<Self> {
+    pub(crate) fn from_file(fh: DkFileHandle) -> DkResult<Self> {
         if !fh.borrow().inode.mode.is_directory() {
             Err(format_err!("Not a directory."))
         } else {

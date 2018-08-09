@@ -302,7 +302,7 @@ impl Handle {
         Ok(ino)
     }
 
-    pub fn open_file(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
+    pub fn open(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
         let inner = match self.borrow_mut().opened_files.entry(ino) {
             hash_map::Entry::Occupied(e) => {
                 // We ensure that all `Weak`s in the map is valid,
@@ -329,7 +329,7 @@ impl Handle {
                 e.get().upgrade().unwrap()
             }
             hash_map::Entry::Vacant(e) => {
-                let fh = self.open_file(ino, Flags::READ_WRITE)?;
+                let fh = self.open(ino, Flags::READ_WRITE)?;
                 let dir = DkDir::from_file(fh)?;
                 let rc = Rc::new(RefCell::new(dir));
                 e.insert(Rc::downgrade(&rc));

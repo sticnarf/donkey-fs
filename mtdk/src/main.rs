@@ -73,42 +73,81 @@ struct DonkeyFuse {
     log: Logger,
 }
 
+macro_rules! construct_fmt {
+    () => {
+        ""
+    };
+    ($i:ident, $($rem: ident),* $(,)*) => {
+        concat!(
+            stringify!($i),
+            ": {:?}",
+            $(
+                ", ",
+                stringify!($rem),
+                ": {:?}",
+            )*
+        )
+    };
+}
+
+macro_rules! debug_params {
+    ($log:expr; $n:tt; $($i: ident),*) => {
+        debug!($log, concat!(
+            stringify!($n),
+            "(",
+            construct_fmt!($($i,)*),
+            ")"
+            ),
+            $($i,)*
+        );
+    }
+}
+
 macro_rules! ino {
-    ($($i:expr), *) => {
+    ($($i:ident), *) => {
         $(
-            if $i == FUSE_ROOT_ID {
-                $i = ROOT_INODE
-            }
+            let $i = if $i == FUSE_ROOT_ID {
+                ROOT_INODE
+            } else {
+                $i
+            };
         )*
     };
 }
 
 impl Filesystem for DonkeyFuse {
-    fn lookup(&mut self, _req: &Request, mut parent: u64, name: &OsStr, reply: ReplyEntry) {
-        ino![parent];
-
-        debug!(
-            self.log,
-            "lookup, parent: {}, name: {}",
-            parent,
-            name.to_str().unwrap_or("not valid string")
-        );
-
+    fn init(&mut self, req: &Request) -> std::result::Result<(), c_int> {
+        debug_params!(self.log; init; req);
         unimplemented!()
     }
 
-    fn getattr(&mut self, _req: &Request, mut ino: u64, reply: ReplyAttr) {
+    fn destroy(&mut self, req: &Request) {
+        debug_params!(self.log; destroy; req);
+        unimplemented!()
+    }
+
+    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        ino![parent];
+        debug_params!(self.log; lookup; req, parent, name);
+        unimplemented!()
+    }
+
+    fn forget(&mut self, req: &Request, ino: u64, nlookup: u64) {
         ino![ino];
+        debug_params!(self.log; forget; req, ino, nlookup);
+        unimplemented!()
+    }
 
-        debug!(self.log, "getattr, inode: {}", ino);
-
+    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+        ino![ino];
+        debug_params!(self.log; getattr; req, ino);
         unimplemented!()
     }
 
     fn setattr(
         &mut self,
         req: &Request,
-        mut ino: u64,
+        ino: u64,
         mode: Option<u32>,
         uid: Option<u32>,
         gid: Option<u32>,
@@ -123,363 +162,251 @@ impl Filesystem for DonkeyFuse {
         reply: ReplyAttr,
     ) {
         ino![ino];
-
-        debug!(self.log, "setattr, inode: {}, fh: {:?}", ino, fh);
-
+        debug_params!(self.log; setattr;
+            req, ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags);
         unimplemented!()
     }
 
-    fn open(&mut self, _req: &Request, mut ino: u64, flags: u32, reply: ReplyOpen) {
+    fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
         ino![ino];
-
-        debug!(self.log, "open, inode: {}", ino);
-
-        unimplemented!()
-    }
-
-    fn read(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        fh: u64,
-        offset: i64,
-        size: u32,
-        reply: ReplyData,
-    ) {
-        ino![ino];
-
-        debug!(self.log, "read, ino: {}, fh: {}, size: {}", ino, fh, size);
-
-        unimplemented!()
-    }
-
-    fn release(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        fh: u64,
-        _flags: u32,
-        _lock_owner: u64,
-        _flush: bool,
-        reply: ReplyEmpty,
-    ) {
-        ino![ino];
-
-        debug!(self.log, "release, fh: {}, ", fh);
-
-        unimplemented!()
-    }
-
-    fn opendir(&mut self, _req: &Request, mut ino: u64, flags: u32, reply: ReplyOpen) {
-        ino![ino];
-
-        debug!(self.log, "opendir, ino: {}", ino);
-
-        unimplemented!()
-    }
-
-    fn readdir(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        fh: u64,
-        mut offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
-        ino![ino];
-
-        debug!(
-            self.log,
-            "readdir, ino: {}, fh: {}, offset: {}", ino, fh, offset
-        );
-
-        unimplemented!()
-    }
-
-    fn releasedir(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        fh: u64,
-        _flags: u32,
-        reply: ReplyEmpty,
-    ) {
-        ino![ino];
-
-        debug!(self.log, "releasedir, fh: {}", fh);
-
+        debug_params!(self.log; readlink; req, ino);
         unimplemented!()
     }
 
     fn mknod(
         &mut self,
         req: &Request,
-        mut parent: u64,
+        parent: u64,
         name: &OsStr,
         mode: u32,
         rdev: u32,
         reply: ReplyEntry,
     ) {
         ino![parent];
-
-        debug!(
-            self.log,
-            "mknod, parent: {}, name: {}",
-            parent,
-            name.to_str().unwrap_or("not valid string")
-        );
-
+        debug_params!(self.log; mknod; req, parent, name, mode, rdev);
         unimplemented!()
     }
 
-    fn mkdir(
-        &mut self,
-        req: &Request,
-        mut parent: u64,
-        name: &OsStr,
-        mode: u32,
-        reply: ReplyEntry,
-    ) {
+    fn mkdir(&mut self, req: &Request, parent: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
         ino![parent];
-
-        debug!(
-            self.log,
-            "mkdir, parent: {}, name: {}",
-            parent,
-            name.to_str().unwrap_or("not valid string")
-        );
-
+        debug_params!(self.log; mkdir; req, parent, name, mode);
         unimplemented!()
     }
 
-    fn write(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        fh: u64,
-        offset: i64,
-        data: &[u8],
-        _flags: u32,
-        reply: ReplyWrite,
-    ) {
-        ino![ino];
-
-        debug!(self.log, "write, fh: {}, {} bytes", fh, data.len());
-
-        unimplemented!()
-    }
-
-    fn flush(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _fh: u64,
-        _lock_owner: u64,
-        reply: ReplyEmpty,
-    ) {
-        ino![ino];
-
-        unimplemented!()
-    }
-
-    fn fsync(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _fh: u64,
-        _datasync: bool,
-        reply: ReplyEmpty,
-    ) {
-        ino![ino];
-
-        debug!(
-            self.log,
-            "fsync, ino: {}, fh: {}, datasync: {}", ino, _fh, _datasync
-        );
-    }
-
-    fn fsyncdir(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _fh: u64,
-        _datasync: bool,
-        reply: ReplyEmpty,
-    ) {
-        ino![ino];
-
-        debug!(
-            self.log,
-            "fsync, ino: {}, fh: {}, datasync: {}", ino, _fh, _datasync
-        );
-    }
-
-    fn unlink(&mut self, _req: &Request, mut parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![parent];
-
-        debug!(
-            self.log,
-            "unlink parent: {}, name: {}",
-            parent,
-            name.to_str().unwrap_or("not valid utf-8")
-        );
-
+        debug_params!(self.log; unlink; req, parent, name);
         unimplemented!()
     }
 
-    fn rmdir(&mut self, _req: &Request, mut parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![parent];
-
-        debug!(
-            self.log,
-            "unlink parent: {}, name: {}",
-            parent,
-            name.to_str().unwrap_or("not valid utf-8")
-        );
-
-        unimplemented!()
-    }
-
-    fn rename(
-        &mut self,
-        _req: &Request,
-        mut parent: u64,
-        _name: &OsStr,
-        mut newparent: u64,
-        _newname: &OsStr,
-        reply: ReplyEmpty,
-    ) {
-        ino![parent, newparent];
-
-        unimplemented!()
-    }
-
-    fn init(&mut self, _req: &Request) -> std::result::Result<(), c_int> {
-        unimplemented!()
-    }
-
-    fn destroy(&mut self, _req: &Request) {
-        unimplemented!()
-    }
-
-    fn forget(&mut self, _req: &Request, mut ino: u64, _nlookup: u64) {
-        ino![ino];
-
-        unimplemented!()
-    }
-
-    fn readlink(&mut self, _req: &Request, mut ino: u64, reply: ReplyData) {
-        ino![ino];
-
+        debug_params!(self.log; rmdir; req, parent, name);
         unimplemented!()
     }
 
     fn symlink(
         &mut self,
-        _req: &Request,
-        mut parent: u64,
-        _name: &OsStr,
-        _link: &Path,
+        req: &Request,
+        parent: u64,
+        name: &OsStr,
+        link: &Path,
         reply: ReplyEntry,
     ) {
         ino![parent];
+        debug_params!(self.log; symlink; req, parent, name, link);
         unimplemented!()
     }
 
-    fn statfs(&mut self, _req: &Request, mut ino: u64, reply: ReplyStatfs) {
+    fn rename(
+        &mut self,
+        req: &Request,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        reply: ReplyEmpty,
+    ) {
+        ino![parent, newparent];
+        debug_params!(self.log; rename; req, parent, name, newparent, newname);
+        unimplemented!()
+    }
+
+    fn open(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
         ino![ino];
+        debug_params!(self.log; setattr; req, ino, flags);
+        unimplemented!()
+    }
+
+    fn read(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, size: u32, reply: ReplyData) {
+        ino![ino];
+        debug_params!(self.log; read; req, ino, fh, offset, size);
+        unimplemented!()
+    }
+
+    fn write(
+        &mut self,
+        req: &Request,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        flags: u32,
+        reply: ReplyWrite,
+    ) {
+        ino![ino];
+        debug_params!(self.log; write; req, ino, fh, offset, data, flags);
+        unimplemented!()
+    }
+
+    fn flush(&mut self, req: &Request, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
+        ino![ino];
+        debug_params!(self.log; flush; req, ino, fh, lock_owner);
+        unimplemented!()
+    }
+
+    fn release(
+        &mut self,
+        req: &Request,
+        ino: u64,
+        fh: u64,
+        flags: u32,
+        lock_owner: u64,
+        flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        ino![ino];
+        debug_params!(self.log; release; req, ino, fh, flags, lock_owner, flush);
+        unimplemented!()
+    }
+
+    fn fsync(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
+        ino![ino];
+        debug_params!(self.log; fsync; req, ino, fh, datasync);
+        unimplemented!()
+    }
+
+    fn opendir(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
+        ino![ino];
+        debug_params!(self.log; opendir; req, ino, flags);
+        unimplemented!()
+    }
+
+    fn readdir(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, reply: ReplyDirectory) {
+        ino![ino];
+        debug_params!(self.log; readdir; req, ino, fh, offset);
+        unimplemented!()
+    }
+
+    fn releasedir(&mut self, req: &Request, ino: u64, fh: u64, flags: u32, reply: ReplyEmpty) {
+        ino![ino];
+        debug_params!(self.log; releasedir; req, ino, fh, flags);
+        unimplemented!()
+    }
+
+    fn fsyncdir(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
+        ino![ino];
+        debug_params!(self.log; fsyncdir; req, ino, fh, datasync);
+        unimplemented!()
+    }
+
+    fn statfs(&mut self, req: &Request, ino: u64, reply: ReplyStatfs) {
+        ino![ino];
+        debug_params!(self.log; statfs; req, ino);
         unimplemented!()
     }
 
     fn setxattr(
         &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _name: &OsStr,
-        _value: &[u8],
-        _flags: u32,
-        _position: u32,
+        req: &Request,
+        ino: u64,
+        name: &OsStr,
+        value: &[u8],
+        flags: u32,
+        position: u32,
         reply: ReplyEmpty,
     ) {
         ino![ino];
+        debug_params!(self.log; setxattr; req, ino, name, value, flags, position);
         unimplemented!()
     }
 
-    fn getxattr(
-        &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _name: &OsStr,
-        _size: u32,
-        reply: ReplyXattr,
-    ) {
+    fn getxattr(&mut self, req: &Request, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         ino![ino];
+        debug_params!(self.log; getxattr; req, ino, name, size);
         unimplemented!()
     }
 
-    fn listxattr(&mut self, _req: &Request, mut ino: u64, _size: u32, reply: ReplyXattr) {
+    fn listxattr(&mut self, req: &Request, ino: u64, size: u32, reply: ReplyXattr) {
         ino![ino];
+        debug_params!(self.log; listxattr; req, ino, size);
         unimplemented!()
     }
 
-    fn removexattr(&mut self, _req: &Request, mut ino: u64, _name: &OsStr, reply: ReplyEmpty) {
+    fn removexattr(&mut self, req: &Request, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![ino];
+        debug_params!(self.log; removexattr; req, ino, name);
         unimplemented!()
     }
 
-    fn access(&mut self, _req: &Request, mut ino: u64, _mask: u32, reply: ReplyEmpty) {
+    fn access(&mut self, req: &Request, ino: u64, mask: u32, reply: ReplyEmpty) {
         ino![ino];
+        debug_params!(self.log; access; req, ino, mask);
         unimplemented!()
     }
 
     fn create(
         &mut self,
-        _req: &Request,
-        mut parent: u64,
-        _name: &OsStr,
-        _mode: u32,
-        _flags: u32,
+        req: &Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        flags: u32,
         reply: ReplyCreate,
     ) {
         ino![parent];
+        debug_params!(self.log; create; req, parent, name, mode, flags);
         unimplemented!()
     }
 
     fn getlk(
         &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _fh: u64,
-        _lock_owner: u64,
-        _start: u64,
-        _end: u64,
-        _typ: u32,
-        _pid: u32,
+        req: &Request,
+        ino: u64,
+        fh: u64,
+        lock_owner: u64,
+        start: u64,
+        end: u64,
+        typ: u32,
+        pid: u32,
         reply: ReplyLock,
     ) {
         ino![ino];
+        debug_params!(self.log; getlk; req, ino, fh, lock_owner, start, end, typ, pid);
         unimplemented!()
     }
 
     fn setlk(
         &mut self,
-        _req: &Request,
-        mut ino: u64,
-        _fh: u64,
-        _lock_owner: u64,
-        _start: u64,
-        _end: u64,
-        _typ: u32,
-        _pid: u32,
-        _sleep: bool,
+        req: &Request,
+        ino: u64,
+        fh: u64,
+        lock_owner: u64,
+        start: u64,
+        end: u64,
+        typ: u32,
+        pid: u32,
+        sleep: bool,
         reply: ReplyEmpty,
     ) {
         ino![ino];
+        debug_params!(self.log; setlk; req, ino, fh, lock_owner, start, end, typ, pid, sleep);
         unimplemented!()
     }
 
-    fn bmap(&mut self, _req: &Request, mut ino: u64, _blocksize: u32, _idx: u64, reply: ReplyBmap) {
+    fn bmap(&mut self, req: &Request, ino: u64, blocksize: u32, idx: u64, reply: ReplyBmap) {
         ino![ino];
+        debug_params!(self.log; bmap; req, ino, blocksize, idx);
         unimplemented!()
     }
 }
