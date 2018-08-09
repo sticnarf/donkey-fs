@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::cmp::min;
 use std::ffi::OsString;
 use std::fmt::{self, Debug, Formatter};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::ops::{DerefMut, Drop};
 use std::rc::Rc;
 use *;

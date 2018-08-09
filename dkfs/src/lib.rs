@@ -7,8 +7,6 @@ extern crate serde_derive;
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
-extern crate static_assertions;
-#[macro_use]
 extern crate failure;
 extern crate bincode;
 #[macro_use]
@@ -22,25 +20,17 @@ extern crate im;
 
 use failure::Error;
 use slog::Logger;
-use std::cmp::min;
-use std::ffi::{OsStr, OsString};
-use std::fs::*;
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::mem::size_of;
-use std::ops::Drop;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::ffi::OsStr;
+use std::io;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use block::*;
 use device::Device;
 use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
-use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::hash_map::{self, HashMap};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
 const BOOT_BLOCK_SIZE: u64 = 1024;
