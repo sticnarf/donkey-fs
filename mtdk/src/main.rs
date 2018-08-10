@@ -2,7 +2,6 @@ extern crate clap;
 #[macro_use]
 extern crate slog;
 extern crate dkfs;
-#[macro_use]
 extern crate failure;
 extern crate fuse;
 extern crate libc;
@@ -48,7 +47,7 @@ fn main() -> DkResult<()> {
         .map(|o| OsStr::new(o))
         .collect::<Vec<&OsStr>>();
 
-    Donkey::open(dev_path).and_then(|dk| {
+    dkfs::open(dev_path).and_then(|dk| {
         let fuse = DonkeyFuse {
             dk: dk.log(log.clone()),
             log: log.clone(),
@@ -118,12 +117,11 @@ macro_rules! ino {
 impl Filesystem for DonkeyFuse {
     fn init(&mut self, req: &Request) -> std::result::Result<(), c_int> {
         debug_params!(self.log; init; req);
-        unimplemented!()
+        Ok(())
     }
 
     fn destroy(&mut self, req: &Request) {
         debug_params!(self.log; destroy; req);
-        unimplemented!()
     }
 
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -413,4 +411,3 @@ impl Filesystem for DonkeyFuse {
 
 mod dk2fuse;
 mod fuse2dk;
-mod ops;

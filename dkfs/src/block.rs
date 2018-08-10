@@ -1,6 +1,7 @@
 use super::*;
 use bincode::{deserialize_from, serialize};
 use byteorder::{ByteOrder, LE};
+use std::fmt::Debug;
 use std::io::{self, Read};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -16,13 +17,19 @@ pub trait Readable {
         Self: Sized;
 }
 
-pub trait Writable {
+pub trait Writable: Debug {
     fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>>;
+}
+
+impl Writable for Box<Writable> {
+    fn as_bytes<'a>(&'a self) -> DkResult<Box<Deref<Target = [u8]> + 'a>> {
+        self.deref().as_bytes()
+    }
 }
 
 pub(crate) const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SuperBlock {
     pub magic_number: u64,
     pub block_size: u64,
@@ -34,7 +41,7 @@ pub struct SuperBlock {
     pub db_fl_ptr: u64,
 }
 
-/// Validates `SuperBlock`.
+/// super block validation
 fn sbv(sb: &SuperBlock) -> DkResult<()> {
     if sb.magic_number != MAGIC_NUMBER {
         Err(format_err!(
@@ -70,6 +77,7 @@ pub struct Inode {
     pub ptrs: InodePtrs,
 }
 
+/// inode validation
 fn inv(inode: &Inode) -> DkResult<()> {
     if inode.ino < ROOT_INODE {
         Err(format_err!(
@@ -88,8 +96,8 @@ impl Inode {
         (ptr - FIRST_INODE_PTR) / INODE_SIZE + ROOT_INODE
     }
 
-    pub fn ptr(&self) -> u64 {
-        (self.ino - ROOT_INODE) * ::INODE_SIZE + FIRST_INODE_PTR
+    pub fn ptr(ino: u64) -> u64 {
+        (ino - ROOT_INODE) * INODE_SIZE + FIRST_INODE_PTR
     }
 }
 
@@ -164,6 +172,7 @@ impl<T> DerefMut for Data<T> {
 pub type ByteData = Data<u8>;
 pub type PtrBlock = Data<u64>;
 
+#[derive(Debug)]
 pub struct RefData<'a>(pub &'a [u8]);
 
 macro_rules! impl_block {

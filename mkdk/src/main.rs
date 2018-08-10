@@ -29,6 +29,6 @@ fn main() -> DkResult<()> {
         value_t!(matches.value_of("bytes-per-inode"), u64).unwrap_or_else(|e| e.exit());
 
     let opt = FormatOptions::default().bytes_per_inode(bytes_per_inode);
-    let _ = Donkey::format(dev_path, opt)?;
+    let _ = format(dev_path, opt)?;
     Ok(())
 }

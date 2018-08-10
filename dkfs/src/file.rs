@@ -1,51 +1,53 @@
 use bincode::{deserialize_from, serialize_into};
 use block::*;
 use im::hashmap::{self as im_hashmap, HashMap as ImHashMap};
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::ffi::OsString;
-use std::fmt::{self, Debug, Formatter};
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::ops::{DerefMut, Drop};
+use std::ops::Drop;
 use std::rc::Rc;
 use *;
 
 #[derive(Debug)]
 pub struct DkFile {
-    pub(crate) handle: Handle,
+    /// Only used in `drop`
     pub(crate) inode: Inode,
     pub(crate) pos: u64,
     pub(crate) dirty: bool,
-    ind_ptr_cm: IndirectPtrCacheManager,
+    pub(crate) close_file_list: Rc<RefCell<Vec<u64>>>,
 }
 
-impl Read for DkFile {
+#[derive(Debug)]
+pub struct DkFileIO<'a> {
+    pub(crate) dk: &'a mut Donkey,
+    pub(crate) file: &'a mut DkFile,
+}
+
+impl<'a> Read for DkFileIO<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.dk_read(buf) {
+        match self.file.dk_read(self.dk, buf) {
             Ok(len) => Ok(len),
             Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
         }
     }
 }
 
-impl Write for DkFile {
+impl<'a> Write for DkFileIO<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.dk_write(buf) {
+        match self.file.dk_write(self.dk, buf) {
             Ok(len) => Ok(len),
             Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.dirty {
-            if let Err(e) = self.handle.write_inode(&self.inode) {
-                try_error!(
-                    self.handle.log,
-                    "Failed to write directory of ino {}! {}",
-                    self.inode.ino,
-                    e
-                );
+        if self.file.dirty {
+            if let Err(e) = self.dk.write_inode(&self.file.inode) {
+                return Err(io::Error::new(
+                    ErrorKind::Other,
+                    format!("Failed to flush file of ino {}! {}", self.file.inode.ino, e),
+                ));
             }
         }
         Ok(())
@@ -73,47 +75,36 @@ impl Seek for DkFile {
 
 impl Drop for DkFile {
     fn drop(&mut self) {
-        // Remove from opened files
-        self.handle.borrow_mut().opened_dirs.remove(&self.inode.ino);
-
-        if let Err(e) = self.flush() {
-            try_error!(self.log(), "Failed to write ino {}! {}", self.inode.ino, e);
-        }
+        self.close_file_list.borrow_mut().push(self.inode.ino);
     }
 }
 
 impl DkFile {
-    pub(crate) fn new(handle: Handle, inode: Inode) -> Self {
+    pub(crate) fn new(inode: Inode, close_file_list: Rc<RefCell<Vec<u64>>>) -> Self {
         DkFile {
-            handle,
-            inode,
-            ind_ptr_cm: Default::default(),
+            inode: inode,
             pos: 0,
             dirty: false,
+            close_file_list,
         }
-    }
-
-    pub(crate) fn log(&self) -> Option<Logger> {
-        self.handle.log.clone()
     }
 
     /// Specify the position of the file.
     /// Returns the real pointer and how many bytes in maximum
     /// you can read or write from this pointer.
     /// This function allocates blocks if necessary.
-    fn locate(&mut self, pos: u64) -> DkResult<(u64, u64)> {
+    fn locate(&mut self, dk: &mut Donkey, pos: u64) -> DkResult<(u64, u64)> {
         fn locate_rec(
-            handle: Handle,
-            cache: IndirectPtrCacheManager,
+            dk: &mut Donkey,
             ptrs: &mut [u64],
             level: u32,
             off: u64,
             bs: u64,
         ) -> DkResult<(u64, u64)> {
-            fn ptr_or_allocate(handle: Handle, ptr: &mut u64, bs: u64) -> DkResult<u64> {
+            fn ptr_or_allocate(dk: &mut Donkey, ptr: &mut u64, bs: u64) -> DkResult<u64> {
                 if *ptr == 0 {
-                    *ptr = handle.allocate_db()?;
-                    handle.fill_zero(*ptr, bs)?;
+                    *ptr = dk.allocate_db()?;
+                    dk.fill_zero(*ptr, bs)?;
                 }
                 Ok(*ptr)
             }
@@ -122,111 +113,38 @@ impl DkFile {
             let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
             let i = off / sz; // index in the current level
             let block_off = off % sz;
-            let ptr = ptr_or_allocate(handle.clone(), &mut ptrs[i as usize], bs)?;
+            let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], bs)?;
             if level == 0 {
                 Ok((ptr + block_off, bs - block_off))
             } else {
-                let mut ind = cache.get(handle.clone(), ptr, level)?;
-                let ptrs = &mut ind.cache.as_mut().unwrap().pb[..];
-                locate_rec(handle, cache, ptrs, level - 1, block_off, bs)
+                // TODO Add cache
+                let mut ptrs: PtrBlock = dk.read(ptr)?;
+                locate_rec(dk, &mut ptrs[..], level - 1, block_off, bs)
             }
         }
 
-        let bs = self.handle.borrow().sb.block_size;
+        let bs = dk.block_size();
         let ptrs = &mut self.inode.ptrs;
         let (level, off) = ptrs.locate(pos, bs);
-        locate_rec(
-            self.handle.clone(),
-            self.ind_ptr_cm.clone(),
-            &mut self.inode.ptrs[level],
-            level,
-            off,
-            bs,
-        )
+        locate_rec(dk, &mut self.inode.ptrs[level], level, off, bs)
     }
 
-    fn dk_read(&mut self, buf: &mut [u8]) -> DkResult<usize> {
-        let (ptr, len) = self.locate(self.pos)?;
+    fn dk_read(&mut self, dk: &mut Donkey, buf: &mut [u8]) -> DkResult<usize> {
+        let (ptr, len) = self.locate(dk, self.pos)?;
         let len = min(len as usize, buf.len());
-        Ok(self.handle.read_into(ptr, &mut buf[..len])? as usize)
+        Ok(dk.read_into(ptr, &mut buf[..len])? as usize)
     }
 
-    fn dk_write(&mut self, buf: &[u8]) -> DkResult<usize> {
-        let (ptr, len) = self.locate(self.pos)?;
+    fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
+        let (ptr, len) = self.locate(dk, self.pos)?;
         let len = min(len as usize, buf.len());
-        self.handle.write(ptr, &RefData(&buf[..len]))?;
+        dk.write(ptr, &RefData(&buf[..len]))?;
         Ok(len)
     }
-}
 
-#[derive(Default, Clone)]
-struct IndirectPtrCacheManager(Rc<RefCell<[Cell<Option<IndirectPtrCache>>; 4]>>);
-
-impl Debug for IndirectPtrCacheManager {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        // Content is ignored because `IndirectPtrCache` is not `Copy`.
-        write!(f, "IndirectPtrCacheManager {{..}}")
-    }
-}
-
-impl IndirectPtrCacheManager {
-    fn get(&self, handle: Handle, ptr: u64, level: u32) -> DkResult<IndirectPtrCacheHandle> {
-        let level = level as usize;
-        let res = self.0.borrow()[level].replace(None);
-        // Hope there is `if let &&` syntax :(
-        let cache = if res.is_some() && res.as_ref().unwrap().ptr == ptr {
-            res.unwrap()
-        } else {
-            let pb = handle.read(ptr)?;
-            IndirectPtrCache {
-                handle,
-                ptr,
-                pb,
-                dirty: false,
-            }
-        };
-        Ok(IndirectPtrCacheHandle {
-            cm: self.clone(),
-            level,
-            cache: Some(cache),
-        })
-    }
-}
-
-struct IndirectPtrCacheHandle {
-    cm: IndirectPtrCacheManager,
-    level: usize,
-    // `cache` is ensured to be Some(..) before dropped
-    cache: Option<IndirectPtrCache>,
-}
-
-impl Drop for IndirectPtrCacheHandle {
-    fn drop(&mut self) {
-        let cache = std::mem::replace(&mut self.cache, None);
-        self.cm.0.borrow()[self.level].set(cache);
-    }
-}
-
-#[derive(Debug)]
-struct IndirectPtrCache {
-    handle: Handle,
-    ptr: u64,
-    pb: PtrBlock,
-    dirty: bool,
-}
-
-impl Drop for IndirectPtrCache {
-    fn drop(&mut self) {
-        if self.dirty {
-            if let Err(e) = self.handle.write(self.ptr, &self.pb) {
-                try_error!(
-                    self.handle.log,
-                    "Failed to write data block at {}: {}",
-                    self.ptr,
-                    e
-                );
-            }
-        }
+    pub(crate) fn flush(&mut self, dk: &mut Donkey) -> DkResult<()> {
+        let mut io = DkFileIO { dk, file: self };
+        Ok(io.flush()?)
     }
 }
 
@@ -246,60 +164,39 @@ impl Deref for DkFileHandle {
 
 #[derive(Debug)]
 pub struct DkDir {
+    /// Only used in `drop`
     pub(crate) fh: DkFileHandle,
     pub(crate) entries: ImHashMap<OsString, u64>,
     pub(crate) dirty: bool,
+    pub(crate) close_dir_list: Rc<RefCell<Vec<u64>>>,
 }
 
 impl DkDir {
-    pub(crate) fn from_file(fh: DkFileHandle) -> DkResult<Self> {
+    pub(crate) fn from_file(
+        fh: DkFileHandle,
+        close_dir_list: Rc<RefCell<Vec<u64>>>,
+    ) -> DkResult<Self> {
         if !fh.borrow().inode.mode.is_directory() {
             Err(format_err!("Not a directory."))
         } else {
-            let mut dir = DkDir {
+            let dir = DkDir {
                 fh,
                 entries: ImHashMap::new(),
                 dirty: false,
+                close_dir_list,
             };
-            dir.read_fully()?;
             Ok(dir)
         }
     }
 
-    fn read_fully(&mut self) -> DkResult<()> {
-        let mut f = self.fh.borrow_mut();
-        let mut reader = BufReader::new(f.deref_mut());
-        loop {
-            // `name` and `ino` are deserialized separately so that
-            // redundant copies are avoided when serializing
-            let ino = deserialize_from(&mut reader)?;
-
-            if ino >= ROOT_INODE {
-                let name: OsString = deserialize_from(&mut reader)?;
-                self.entries.insert(name, ino);
-            } else if ino == ROOT_INODE - 1 {
-                // `ino == ROOT_INODE - 1` indicates the end
-                // of the directory.
-                return Ok(());
-            } else {
-                return Err(format_err!("Invalid directory entry ino: {}", ino));
-            }
-        }
-    }
-
-    fn fs_handle(&self) -> Handle {
-        self.fh.borrow().handle.clone()
-    }
-
-    fn ino(&self) -> u64 {
-        self.fh.borrow().inode.ino
-    }
-
-    pub fn flush(&mut self) -> DkResult<()> {
+    pub fn flush(&mut self, dk: &mut Donkey) -> DkResult<()> {
         if self.dirty {
-            let mut f = self.fh.borrow_mut();
-            f.seek(SeekFrom::Start(0))?;
-            let mut writer = BufWriter::new(f.deref_mut());
+            self.fh.borrow_mut().seek(SeekFrom::Start(0))?;
+            let mut io = DkFileIO {
+                dk,
+                file: &mut *self.fh.borrow_mut(),
+            };
+            let mut writer = BufWriter::new(&mut io);
             for (name, ino) in &self.entries {
                 serialize_into(&mut writer, ino)?;
                 serialize_into(&mut writer, name)?;
@@ -311,39 +208,12 @@ impl DkDir {
         }
         Ok(())
     }
-
-    pub fn add_entry(&mut self, name: &OsStr, ino: u64) -> DkResult<()> {
-        match self.entries.entry(name.to_os_string()) {
-            im_hashmap::Entry::Vacant(e) => {
-                e.insert(ino);
-                self.dirty = true;
-                Ok(())
-            }
-            im_hashmap::Entry::Occupied(_) => Err(format_err!("Entry {:?} already exists.", name)),
-        }
-    }
-
-    fn log(&self) -> Option<Logger> {
-        self.fh.borrow().log()
-    }
 }
 
 impl Drop for DkDir {
     fn drop(&mut self) {
-        // Remove from opened directories
-        self.fs_handle()
-            .borrow_mut()
-            .opened_dirs
-            .remove(&self.ino());
-
-        if let Err(e) = self.flush() {
-            try_error!(
-                self.log(),
-                "Failed to write directory of ino {}! {}",
-                self.fh.borrow().inode.ino,
-                e
-            );
-        }
+        let ino = self.fh.borrow().inode.ino;
+        self.close_dir_list.borrow_mut().push(ino);
     }
 }
 
@@ -357,5 +227,47 @@ impl Deref for DkDirHandle {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+impl DkDirHandle {
+    pub fn add_entry(&self, name: &OsStr, ino: u64) -> DkResult<()> {
+        let res = match self.borrow_mut().entries.entry(name.to_os_string()) {
+            im_hashmap::Entry::Vacant(e) => {
+                e.insert(ino);
+                Ok(())
+            }
+            im_hashmap::Entry::Occupied(_) => Err(format_err!("Entry {:?} already exists.", name)),
+        };
+        self.borrow_mut().dirty = true;
+        res
+    }
+
+    pub(crate) fn read_fully(&self, dk: &mut Donkey) -> DkResult<()> {
+        let ref fh = self.borrow().fh;
+        if fh.borrow().inode.size == 0 {
+            // Directory is just created
+            return Ok(());
+        }
+
+        let file = &mut *fh.borrow_mut();
+        let io = DkFileIO { file, dk };
+        let mut reader = BufReader::new(io);
+        loop {
+            // `name` and `ino` are deserialized separately so that
+            // redundant copies are avoided when serializing
+            let ino = deserialize_from(&mut reader)?;
+
+            if ino >= ROOT_INODE {
+                let name: OsString = deserialize_from(&mut reader)?;
+                self.borrow_mut().entries.insert(name, ino);
+            } else if ino == ROOT_INODE - 1 {
+                // `ino == ROOT_INODE - 1` indicates the end
+                // of the directory.
+                return Ok(());
+            } else {
+                return Err(format_err!("Invalid directory entry ino: {}", ino));
+            }
+        }
     }
 }

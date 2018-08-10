@@ -46,92 +46,90 @@ pub const ROOT_INODE: u64 = 114514;
 
 pub type DkResult<T> = std::result::Result<T, Error>;
 
+pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Handle> {
+    let mut dev = device::open(dev_path)?;
+    let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
+    Ok(Donkey::new(dev, sb))
+}
+
+pub fn format<P: AsRef<Path>>(dev_path: P, opts: FormatOptions) -> DkResult<Handle> {
+    let mut dev = device::open(dev_path)?;
+
+    let block_size = dev.block_size();
+    let inode_count = dev.size() / opts.bytes_per_inode;
+    let used_blocks = (FIRST_INODE_PTR + INODE_SIZE * inode_count + block_size - 1) / block_size;
+    let first_db_ptr = used_blocks * block_size;
+
+    // No plan to implement a real boot block here.
+
+    // Make the initial super block
+    let sb = SuperBlock {
+        magic_number: block::MAGIC_NUMBER,
+        block_size,
+        inode_count,
+        used_inode_count: 0,
+        db_count: dev.block_count() - first_db_ptr / block_size,
+        used_db_count: 0,
+        inode_fl_ptr: FIRST_INODE_PTR,
+        db_fl_ptr: first_db_ptr,
+    };
+    dev.write_at(&sb, SUPER_BLOCK_PTR)?;
+
+    // Make the initial free inode
+    let fi = FreeList {
+        next_ptr: 0,
+        size: inode_count * INODE_SIZE,
+    };
+    dev.write_at(&fi, FIRST_INODE_PTR)?;
+
+    // Make the initial free data block
+    let fb = FreeList {
+        next_ptr: 0,
+        size: dev.size() - first_db_ptr,
+    };
+    dev.write_at(&fb, first_db_ptr)?;
+
+    let dk = Donkey::new(dev, sb);
+    dk.borrow_mut().create_root()?;
+    Ok(dk)
+}
+
 #[derive(Debug)]
 pub struct Donkey {
     dev: Box<Device>,
     sb: SuperBlock,
-    opened_files: HashMap<u64, Weak<RefCell<DkFile>>>,
-    opened_dirs: HashMap<u64, Weak<RefCell<DkDir>>>,
+    opened_files: HashMap<u64, Rc<RefCell<DkFile>>>,
+    opened_dirs: HashMap<u64, Rc<RefCell<DkDir>>>,
+    close_file_list: Rc<RefCell<Vec<u64>>>,
+    close_dir_list: Rc<RefCell<Vec<u64>>>,
 }
 
 impl Donkey {
-    pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Handle> {
-        let mut dev = device::open(dev_path)?;
-        let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
-        let dk = Donkey::new(dev, sb);
-        Ok(Handle::new(dk))
-    }
-
-    pub fn format<P: AsRef<Path>>(dev_path: P, opts: FormatOptions) -> DkResult<Handle> {
-        let mut dev = device::open(dev_path)?;
-
-        let block_size = dev.block_size();
-        let inode_count = dev.size() / opts.bytes_per_inode;
-        let first_db_ptr = Donkey::first_db_ptr(inode_count, block_size);
-
-        // No plan to implement a real boot block here.
-
-        // Make the initial super block
-        let sb = SuperBlock {
-            magic_number: block::MAGIC_NUMBER,
-            block_size,
-            inode_count,
-            used_inode_count: 0,
-            db_count: dev.block_count() - first_db_ptr / block_size,
-            used_db_count: 0,
-            inode_fl_ptr: FIRST_INODE_PTR,
-            db_fl_ptr: first_db_ptr,
-        };
-        dev.write_at(&sb, SUPER_BLOCK_PTR)?;
-
-        // Make the initial free inode
-        let fi = FreeList {
-            next_ptr: 0,
-            size: inode_count * INODE_SIZE,
-        };
-        dev.write_at(&fi, FIRST_INODE_PTR)?;
-
-        // Make the initial free data block
-        let fb = FreeList {
-            next_ptr: 0,
-            size: dev.size() - first_db_ptr,
-        };
-        dev.write_at(&fb, first_db_ptr)?;
-
-        let dk = Donkey::new(dev, sb);
-        let handle = Handle::new(dk);
-        Donkey::create_root(handle.clone())?;
-        Ok(handle)
-    }
-
-    fn new(dev: Box<Device>, sb: SuperBlock) -> Self {
-        Donkey {
+    fn new(dev: Box<Device>, sb: SuperBlock) -> Handle {
+        let dk = Donkey {
             dev,
             sb,
             opened_files: HashMap::new(),
             opened_dirs: HashMap::new(),
-        }
-    }
-
-    /// We take care of block alignment here in case when
-    /// the device itself is well aligned.
-    fn first_db_ptr(inode_count: u64, block_size: u64) -> u64 {
-        let used_blocks =
-            (FIRST_INODE_PTR + INODE_SIZE * inode_count + block_size - 1) / block_size;
-        used_blocks * block_size
+            close_file_list: Rc::new(RefCell::new(Vec::new())),
+            close_dir_list: Rc::new(RefCell::new(Vec::new())),
+        };
+        Handle::new(dk)
     }
 
     /// This function is only called in `format`
     /// because we assume root inode is not allocated yet.
-    fn create_root(handle: Handle) -> DkResult<()> {
+    fn create_root(&mut self) -> DkResult<()> {
         let perm = FileMode::USER_RWX
             | FileMode::GROUP_READ
             | FileMode::GROUP_EXECUTE
             | FileMode::OTHERS_READ
             | FileMode::OTHERS_EXECUTE;
-        let root_inode = handle.mkdir_raw(ROOT_INODE, perm, 0, 0)?;
+        let root_inode = self.mkdir(ROOT_INODE, perm, 0, 0)?;
 
         if root_inode == ROOT_INODE {
+            self.close_dirs_in_list()?;
+            self.close_files_in_list()?;
             Ok(())
         } else {
             Err(format_err!(
@@ -141,64 +139,78 @@ impl Donkey {
             ))
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct Handle {
-    inner: Rc<RefCell<Donkey>>,
-    log: Option<Logger>,
-}
-
-impl Deref for Handle {
-    type Target = RefCell<Donkey>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl Handle {
-    fn new(dk: Donkey) -> Self {
-        Handle {
-            inner: Rc::new(RefCell::new(dk)),
-            log: None,
-        }
-    }
-
-    pub fn log(&self, log: Logger) -> Self {
-        Handle {
-            inner: self.inner.clone(),
-            log: Some(log),
-        }
-    }
-
-    fn read_into(&self, ptr: u64, mut dst: &mut [u8]) -> DkResult<u64> {
+    fn read_into(&mut self, ptr: u64, mut dst: &mut [u8]) -> DkResult<u64> {
         Ok(io::copy(
-            &mut self.borrow_mut().dev.read_len_at(ptr, dst.len() as u64)?,
+            &mut self.dev.read_len_at(ptr, dst.len() as u64)?,
             &mut dst,
         )?)
     }
 
-    fn read<T: Readable>(&self, ptr: u64) -> DkResult<T> {
-        <T as Readable>::from_bytes(self.borrow_mut().dev.read_at(ptr)?)
+    fn read<T: Readable>(&mut self, ptr: u64) -> DkResult<T> {
+        <T as Readable>::from_bytes(self.dev.read_at(ptr)?)
     }
 
-    fn write(&self, ptr: u64, writable: &Writable) -> DkResult<()> {
-        self.borrow_mut().dev.write_at(writable, ptr)
+    fn write(&mut self, ptr: u64, writable: &Writable) -> DkResult<()> {
+        self.dev.write_at(writable, ptr)
     }
 
     fn block_size(&self) -> u64 {
-        self.borrow().sb.block_size
+        self.sb.block_size
     }
 
-    fn flush_sb(&self) -> DkResult<()> {
-        self.write(SUPER_BLOCK_PTR, &self.borrow().sb)
+    fn flush_sb(&mut self) -> DkResult<()> {
+        self.dev.write_at(&self.sb, SUPER_BLOCK_PTR)
+    }
+
+    fn close_files_in_list(&mut self) -> DkResult<()> {
+        loop {
+            let ino = self.close_file_list.borrow_mut().pop();
+            match ino {
+                Some(ino) => {
+                    let drop = self.opened_files.get(&ino).and_then(|rc| {
+                        if Rc::strong_count(rc) == 1 {
+                            Some(rc.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(rc) = drop {
+                        rc.borrow_mut().flush(self)?;
+                        self.opened_files.remove(&ino);
+                    }
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+
+    fn close_dirs_in_list(&mut self) -> DkResult<()> {
+        loop {
+            let ino = self.close_dir_list.borrow_mut().pop();
+            match ino {
+                Some(ino) => {
+                    let drop = self.opened_dirs.get(&ino).and_then(|rc| {
+                        if Rc::strong_count(rc) == 1 {
+                            Some(rc.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(rc) = drop {
+                        rc.borrow_mut().flush(self)?;
+                        self.opened_files.remove(&ino);
+                    }
+                }
+                None => return Ok(()),
+            }
+        }
     }
 
     /// Allocated a block of size `size` from `FreeList` at `ptr`.
     /// Returns the pointer of the allocated block and the pointer
     /// of the new `FreeList`.
-    fn allocate_from_free(&self, ptr: u64, size: u64) -> DkResult<(u64, u64)> {
+    fn allocate_from_free(&mut self, ptr: u64, size: u64) -> DkResult<(u64, u64)> {
         let fl: FreeList = self.read(ptr)?;
         if fl.size >= size {
             // Split this free list
@@ -215,13 +227,12 @@ impl Handle {
     }
 
     /// Returns the inode number of the allocated inode
-    fn allocate_inode(&self) -> DkResult<u64> {
-        let sb = &self.borrow().sb;
-        if sb.used_inode_count < sb.inode_count {
-            let fl_ptr = self.borrow().sb.inode_fl_ptr;
+    fn allocate_inode(&mut self) -> DkResult<u64> {
+        if self.sb.used_inode_count < self.sb.inode_count {
+            let fl_ptr = self.sb.inode_fl_ptr;
             let (fi_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, INODE_SIZE)?;
-            self.borrow_mut().sb.inode_fl_ptr = new_fl_ptr;
-            self.borrow_mut().sb.used_inode_count += 1;
+            self.sb.inode_fl_ptr = new_fl_ptr;
+            self.sb.used_inode_count += 1;
             self.flush_sb()?;
             Ok(Inode::ino(fi_ptr))
         } else {
@@ -229,22 +240,21 @@ impl Handle {
         }
     }
 
-    fn read_inode(&self, ino: u64) -> DkResult<Inode> {
-        self.read(ino)
+    fn read_inode(&mut self, ino: u64) -> DkResult<Inode> {
+        self.read(Inode::ptr(ino))
     }
 
-    fn write_inode(&self, inode: &Inode) -> DkResult<()> {
-        self.write(inode.ptr(), inode)
+    fn write_inode(&mut self, inode: &Inode) -> DkResult<()> {
+        self.write(Inode::ptr(inode.ino), inode)
     }
 
     /// Returns the pointer of the allocated data block
-    fn allocate_db(&self) -> DkResult<u64> {
-        let sb = &self.borrow().sb;
-        if sb.used_db_count < sb.db_count {
-            let fl_ptr = self.borrow().sb.db_fl_ptr;
+    fn allocate_db(&mut self) -> DkResult<u64> {
+        if self.sb.used_db_count < self.sb.db_count {
+            let fl_ptr = self.sb.db_fl_ptr;
             let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, self.block_size())?;
-            self.borrow_mut().sb.db_fl_ptr = new_fl_ptr;
-            self.borrow_mut().sb.used_db_count += 1;
+            self.sb.db_fl_ptr = new_fl_ptr;
+            self.sb.used_db_count += 1;
             self.flush_sb()?;
             Ok(fd_ptr)
         } else {
@@ -252,15 +262,15 @@ impl Handle {
         }
     }
 
-    fn fill_zero(&self, ptr: u64, size: u64) -> DkResult<()> {
+    fn fill_zero(&mut self, ptr: u64, size: u64) -> DkResult<()> {
         let v = vec![0u8; size as usize];
         let b = RefData(v.as_slice());
         self.write(ptr, &b)
     }
 
     /// Returns the inode number of the new node.
-    pub fn mknod(
-        &self,
+    fn mknod(
+        &mut self,
         mode: FileMode,
         uid: u32,
         gid: u32,
@@ -290,54 +300,97 @@ impl Handle {
     /// Returns the inode number of the new directory.
     /// This method **DOES NOT** link the new directory to
     /// the parent directory!
-    fn mkdir_raw(&self, parent_ino: u64, perm: FileMode, uid: u32, gid: u32) -> DkResult<u64> {
+    fn mkdir(&mut self, parent_ino: u64, perm: FileMode, uid: u32, gid: u32) -> DkResult<u64> {
         let mode = FileMode::DIRECTORY | perm;
         let ino = self.mknod(mode, uid, gid, 0, None)?;
 
         // Create `.` and `..` entry
         let dir = self.open_dir(ino)?;
-        dir.borrow_mut().add_entry(OsStr::new("."), ino)?;
-        dir.borrow_mut().add_entry(OsStr::new(".."), parent_ino)?;
+        dir.add_entry(OsStr::new("."), ino)?;
+        dir.add_entry(OsStr::new(".."), parent_ino)?;
 
         Ok(ino)
     }
 
-    pub fn open(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
-        let inner = match self.borrow_mut().opened_files.entry(ino) {
-            hash_map::Entry::Occupied(e) => {
-                // We ensure that all `Weak`s in the map is valid,
-                // so we simply unwrap here.
-                e.get().upgrade().unwrap()
-            }
-            hash_map::Entry::Vacant(e) => {
+    fn open(&mut self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
+        self.close_files_in_list()?;
+        // We do not use entry API here to prevent `self` being borrowed twice
+        let inner = match self.opened_files.get(&ino) {
+            Some(inner) => inner.clone(),
+            None => {
                 let inode = self.read_inode(ino)?;
-                let f = DkFile::new(self.clone(), inode);
+                let f = DkFile::new(inode, self.close_file_list.clone());
                 let rc = Rc::new(RefCell::new(f));
-                e.insert(Rc::downgrade(&rc));
+                self.opened_files.insert(ino, rc.clone());
                 rc
             }
         };
-        let handle = DkFileHandle { inner, flags };
-        Ok(handle)
+        let df = DkFileHandle { inner, flags };
+        Ok(df)
     }
 
-    pub fn open_dir(&self, ino: u64) -> DkResult<DkDirHandle> {
-        let inner = match self.borrow_mut().opened_dirs.entry(ino) {
-            hash_map::Entry::Occupied(e) => {
-                // We ensure that all `Weak`s in the map is valid,
-                // so we simply unwrap here.
-                e.get().upgrade().unwrap()
-            }
-            hash_map::Entry::Vacant(e) => {
+    fn open_dir(&mut self, ino: u64) -> DkResult<DkDirHandle> {
+        self.close_dirs_in_list()?;
+        // We do not use entry API here to prevent `self` being borrowed twice
+        let inner = match self.opened_dirs.get(&ino) {
+            Some(inner) => inner.clone(),
+            None => {
                 let fh = self.open(ino, Flags::READ_WRITE)?;
-                let dir = DkDir::from_file(fh)?;
+                let dir = DkDir::from_file(fh, self.close_dir_list.clone())?;
                 let rc = Rc::new(RefCell::new(dir));
-                e.insert(Rc::downgrade(&rc));
+                self.opened_dirs.insert(ino, rc.clone());
                 rc
             }
         };
-        let handle = DkDirHandle { inner };
-        Ok(handle)
+        let dd = DkDirHandle { inner };
+        dd.read_fully(self)?;
+        Ok(dd)
+    }
+}
+
+impl Drop for Donkey {
+    fn drop(&mut self) {
+        if let Err(e) = self.close_dirs_in_list() {
+            eprintln!(
+                "Failed to close some directories: {}. This may lead to filesystem corruption!",
+                e
+            );
+        }
+        if let Err(e) = self.close_files_in_list() {
+            eprintln!(
+                "Failed to close some files: {}. This may lead to filesystem corruption!",
+                e
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Handle {
+    inner: Rc<RefCell<Donkey>>,
+    log: Option<Logger>,
+}
+
+impl Deref for Handle {
+    type Target = RefCell<Donkey>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl Handle {
+    fn new(dk: Donkey) -> Self {
+        Handle {
+            inner: Rc::new(RefCell::new(dk)),
+            log: None,
+        }
+    }
+
+    pub fn log(&self, log: Logger) -> Self {
+        let mut handle = self.clone();
+        handle.log = Some(log);
+        handle
     }
 }
 
