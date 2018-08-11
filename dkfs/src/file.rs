@@ -19,12 +19,12 @@ pub struct DkFile {
 }
 
 #[derive(Debug)]
-pub struct DkFileIO<'a> {
-    pub(crate) dk: &'a mut Donkey,
+pub struct DkFileIO<'a, 'b: 'a> {
+    pub(crate) dk: &'a mut Donkey<'b>,
     pub(crate) file: &'a mut DkFile,
 }
 
-impl<'a> Read for DkFileIO<'a> {
+impl<'a, 'b: 'a> Read for DkFileIO<'a, 'b> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.file.dk_read(self.dk, buf) {
             Ok(len) => Ok(len),
@@ -33,7 +33,7 @@ impl<'a> Read for DkFileIO<'a> {
     }
 }
 
-impl<'a> Write for DkFileIO<'a> {
+impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.file.dk_write(self.dk, buf) {
             Ok(len) => Ok(len),

@@ -236,15 +236,15 @@ impl Seek for BlockDevice {
 }
 
 #[derive(Debug)]
-pub struct Memory(Cursor<Vec<u8>>);
+pub struct Memory<'a>(Cursor<&'a mut [u8]>);
 
-impl Memory {
-    pub fn new(blocks: usize) -> Self {
-        Memory(Cursor::new(vec![0; blocks * 8]))
+impl<'a> Memory<'a> {
+    pub fn new(mem: &'a mut [u8]) -> Self {
+        Memory(Cursor::new(mem))
     }
 }
 
-impl Device for Memory {
+impl<'a> Device for Memory<'a> {
     fn block_count(&self) -> u64 {
         self.0.get_ref().len() as u64 / 8
     }
@@ -254,13 +254,13 @@ impl Device for Memory {
     }
 }
 
-impl Read for Memory {
+impl<'a> Read for Memory<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
 }
 
-impl Write for Memory {
+impl<'a> Write for Memory<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
     }
@@ -270,7 +270,7 @@ impl Write for Memory {
     }
 }
 
-impl Seek for Memory {
+impl<'a> Seek for Memory<'a> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.0.seek(pos)
     }

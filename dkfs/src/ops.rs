@@ -7,12 +7,12 @@ use std::rc::Rc;
 use *;
 
 #[derive(Debug, Clone)]
-pub struct Handle {
-    inner: Rc<RefCell<Donkey>>,
+pub struct Handle<'a> {
+    pub(crate) inner: Rc<RefCell<Donkey<'a>>>,
 }
 
-impl Handle {
-    pub(crate) fn new(dk: Donkey) -> Self {
+impl<'a> Handle<'a> {
+    pub(crate) fn new(dk: Donkey<'a>) -> Self {
         Handle {
             inner: Rc::new(RefCell::new(dk)),
         }

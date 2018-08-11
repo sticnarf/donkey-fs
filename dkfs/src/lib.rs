@@ -44,12 +44,12 @@ pub use ops::Handle;
 
 pub type DkResult<T> = std::result::Result<T, Error>;
 
-pub fn open(mut dev: Box<Device>) -> DkResult<Handle> {
+pub fn open<'a>(mut dev: Box<Device + 'a>) -> DkResult<Handle<'a>> {
     let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
     Ok(Handle::new(Donkey::new(dev, sb)))
 }
 
-pub fn format(mut dev: Box<Device>, opts: FormatOptions) -> DkResult<Handle> {
+pub fn format<'a>(mut dev: Box<Device + 'a>, opts: FormatOptions) -> DkResult<Handle<'a>> {
     let block_size = dev.block_size();
     let inode_count = dev.size() / opts.bytes_per_inode;
     let used_blocks = (FIRST_INODE_PTR + INODE_SIZE * inode_count + block_size - 1) / block_size;
@@ -90,8 +90,8 @@ pub fn format(mut dev: Box<Device>, opts: FormatOptions) -> DkResult<Handle> {
 }
 
 #[derive(Debug)]
-pub struct Donkey {
-    dev: Box<Device>,
+pub struct Donkey<'a> {
+    dev: Box<Device + 'a>,
     sb: SuperBlock,
     opened_files: HashMap<u64, Rc<RefCell<DkFile>>>,
     opened_dirs: HashMap<u64, Rc<RefCell<DkDir>>>,
@@ -99,8 +99,8 @@ pub struct Donkey {
     close_dir_list: Rc<RefCell<Vec<u64>>>,
 }
 
-impl Donkey {
-    fn new(dev: Box<Device>, sb: SuperBlock) -> Donkey {
+impl<'a> Donkey<'a> {
+    fn new(dev: Box<Device + 'a>, sb: SuperBlock) -> Donkey<'a> {
         Donkey {
             dev,
             sb,
@@ -357,7 +357,7 @@ impl Donkey {
     }
 }
 
-impl Drop for Donkey {
+impl<'a> Drop for Donkey<'a> {
     fn drop(&mut self) {
         if let Err(e) = self.close_dirs_in_list() {
             eprintln!(
@@ -499,4 +499,4 @@ pub mod ops;
 pub mod replies;
 
 #[cfg(test)]
-mod tests {}
+mod tests;

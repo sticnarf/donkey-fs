@@ -71,8 +71,8 @@ fn logger() -> Logger {
 
 const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
 
-struct DonkeyFuse {
-    dk: Handle,
+struct DonkeyFuse<'a> {
+    dk: Handle<'a>,
     log: Logger,
     dir_fh: HashMap<u64, DkDirHandle>,
     file_fh: HashMap<u64, DkFileHandle>,
@@ -120,7 +120,7 @@ macro_rules! ino {
     };
 }
 
-impl Filesystem for DonkeyFuse {
+impl<'a> Filesystem for DonkeyFuse<'a> {
     fn init(&mut self, req: &Request) -> std::result::Result<(), c_int> {
         debug_params!(self.log; init; req);
         Ok(())
