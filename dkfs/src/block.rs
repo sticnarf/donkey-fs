@@ -72,6 +72,7 @@ pub struct Inode {
     pub crtime: DkTimespec,
     /// valid for non-device files
     pub size: u64,
+    pub blocks: u64,
     /// valid for device special files
     pub device: u64,
     pub ptrs: InodePtrs,

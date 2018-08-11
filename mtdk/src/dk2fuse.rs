@@ -1,3 +1,4 @@
+use dkfs::replies::*;
 use dkfs::*;
 use fuse::*;
 use libc::*;
@@ -41,4 +42,23 @@ pub fn flags(flags: Flags) -> u32 {
     }
 
     res as u32
+}
+
+pub fn file_attr(stat: Stat) -> FileAttr {
+    FileAttr {
+        ino: stat.ino,
+        size: stat.size,
+        blocks: stat.blocks,
+        atime: timespec(stat.atime),
+        mtime: timespec(stat.mtime),
+        ctime: timespec(stat.ctime),
+        crtime: timespec(stat.crtime),
+        kind: file_type(stat.mode),
+        perm: permission(stat.mode),
+        nlink: stat.nlink as u32,
+        uid: stat.uid,
+        gid: stat.gid,
+        rdev: stat.rdev as u32,
+        flags: 0,
+    }
 }

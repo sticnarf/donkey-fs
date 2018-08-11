@@ -12,6 +12,7 @@ use dkfs::*;
 use fuse::*;
 use libc::*;
 use slog::{Drain, Logger};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -41,6 +42,8 @@ fn main() -> DkResult<()> {
         "-o",
         "allow_other",
         "-o",
+        "default_permissions",
+        "-o",
         "auto_unmount",
     ]
         .iter()
@@ -48,7 +51,12 @@ fn main() -> DkResult<()> {
         .collect::<Vec<&OsStr>>();
 
     dkfs::open(dev_path).and_then(|dk| {
-        let fuse = DonkeyFuse { dk: dk, log };
+        let fuse = DonkeyFuse {
+            dk: dk,
+            log,
+            dir_fh: HashMap::new(),
+            file_fh: HashMap::new(),
+        };
         fuse::mount(fuse, &dir, &options)?;
         Ok(())
     })
@@ -67,6 +75,8 @@ const TTL: time::Timespec = time::Timespec { sec: 1, nsec: 0 };
 struct DonkeyFuse {
     dk: Handle,
     log: Logger,
+    dir_fh: HashMap<u64, DkDirHandle>,
+    file_fh: HashMap<u64, DkFileHandle>,
 }
 
 macro_rules! construct_fmt {
@@ -124,7 +134,13 @@ impl Filesystem for DonkeyFuse {
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         ino![parent];
         debug_params!(self.log; lookup; req, parent, name);
-        unimplemented!()
+        match self.dk.lookup(parent, name) {
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Err(e) => {
+                info!(self.log, "{}", e);
+                reply.error(ENOENT);
+            }
+        }
     }
 
     fn forget(&mut self, req: &Request, ino: u64, nlookup: u64) {
@@ -136,7 +152,15 @@ impl Filesystem for DonkeyFuse {
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
         ino![ino];
         debug_params!(self.log; getattr; req, ino);
-        unimplemented!()
+        match self.dk.getattr(ino) {
+            Ok(stat) => {
+                reply.attr(&TTL, &dk2fuse::file_attr(stat));
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(ENOENT);
+            }
+        }
     }
 
     fn setattr(
@@ -284,19 +308,70 @@ impl Filesystem for DonkeyFuse {
     fn opendir(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
         ino![ino];
         debug_params!(self.log; opendir; req, ino, flags);
-        unimplemented!()
+        match self.dk.opendir(ino) {
+            Ok(dh) => {
+                self.dir_fh.insert(req.unique(), dh);
+                reply.opened(req.unique(), flags);
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(ENOENT);
+            }
+        }
     }
 
-    fn readdir(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, reply: ReplyDirectory) {
+    fn readdir(
+        &mut self,
+        req: &Request,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
         ino![ino];
         debug_params!(self.log; readdir; req, ino, fh, offset);
-        unimplemented!()
+        let dh = match self.dir_fh.get(&fh) {
+            Some(dh) => dh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        for (i, (name, ino)) in self.dk.readdir(dh.clone(), offset as usize).enumerate() {
+            match self.dk.getattr(ino) {
+                Ok(stat) => {
+                    if reply.add(
+                        ino,
+                        offset + i as i64 + 1,
+                        dk2fuse::file_type(stat.mode),
+                        name,
+                    ) {
+                        // Full
+                        return;
+                    }
+                }
+                Err(e) => {
+                    error!(self.log, "{}", e);
+                    reply.error(EIO);
+                    return;
+                }
+            }
+        }
+        reply.ok();
     }
 
     fn releasedir(&mut self, req: &Request, ino: u64, fh: u64, flags: u32, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; releasedir; req, ino, fh, flags);
-        unimplemented!()
+        if let Some(_) = self.dir_fh.remove(&fh) {
+            match self.dk.apply_releases() {
+                Ok(_) => reply.ok(),
+                Err(e) => {
+                    error!(self.log, "{}", e);
+                    reply.error(EIO);
+                }
+            }
+        }
     }
 
     fn fsyncdir(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
@@ -308,7 +383,24 @@ impl Filesystem for DonkeyFuse {
     fn statfs(&mut self, req: &Request, ino: u64, reply: ReplyStatfs) {
         ino![ino];
         debug_params!(self.log; statfs; req, ino);
-        unimplemented!()
+        match self.dk.statfs() {
+            Ok(stat) => {
+                reply.statfs(
+                    stat.blocks,
+                    stat.bfree,
+                    stat.bavail,
+                    stat.files,
+                    stat.ffree,
+                    stat.bsize as u32,
+                    stat.namelen,
+                    stat.bsize as u32,
+                );
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn setxattr(
@@ -329,24 +421,28 @@ impl Filesystem for DonkeyFuse {
     fn getxattr(&mut self, req: &Request, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         ino![ino];
         debug_params!(self.log; getxattr; req, ino, name, size);
-        unimplemented!()
+        warn!(self.log, "Extra attributes are not supported.");
+        reply.error(ENOTSUP);
     }
 
     fn listxattr(&mut self, req: &Request, ino: u64, size: u32, reply: ReplyXattr) {
         ino![ino];
         debug_params!(self.log; listxattr; req, ino, size);
-        unimplemented!()
+        warn!(self.log, "Extra attributes are not supported.");
+        reply.error(ENOTSUP);
     }
 
     fn removexattr(&mut self, req: &Request, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; removexattr; req, ino, name);
-        unimplemented!()
+        warn!(self.log, "Extra attributes are not supported.");
+        reply.error(ENOTSUP);
     }
 
     fn access(&mut self, req: &Request, ino: u64, mask: u32, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; access; req, ino, mask);
+        // This function should not be called with `default_permissions` mount option.
         unimplemented!()
     }
 

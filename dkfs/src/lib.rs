@@ -17,7 +17,7 @@ extern crate im;
 use block::*;
 use device::Device;
 use failure::Error;
-use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
+use file::{DkDir, DkFile};
 use std::cell::RefCell;
 use std::collections::hash_map::HashMap;
 use std::ffi::OsStr;
@@ -37,7 +37,9 @@ pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 /// This cannot be a very small integer. Inode numbers of
 /// small integers are reserved for special use.
 pub const ROOT_INODE: u64 = 114514;
+const MAX_NAMELEN: u32 = 256;
 
+pub use file::{DkDirHandle, DkFileHandle};
 pub use ops::Handle;
 
 pub type DkResult<T> = std::result::Result<T, Error>;
@@ -194,7 +196,7 @@ impl Donkey {
                     });
                     if let Some(rc) = drop {
                         rc.borrow_mut().flush(self)?;
-                        self.opened_files.remove(&ino);
+                        self.opened_dirs.remove(&ino);
                     }
                 }
                 None => return Ok(()),
@@ -285,6 +287,7 @@ impl Donkey {
             ctime: time,
             crtime: time,
             size: 0,
+            blocks: 0,
             device: rdev.unwrap_or(0),
             ptrs: Default::default(),
         };
@@ -301,10 +304,17 @@ impl Donkey {
 
         // Create `.` and `..` entry
         let dir = self.open_dir(ino)?;
-        dir.add_entry(OsStr::new("."), ino)?;
-        dir.add_entry(OsStr::new(".."), parent_ino)?;
+        self.link(ino, dir.clone(), OsStr::new("."))?;
+        self.link(parent_ino, dir, OsStr::new(".."))?;
 
         Ok(ino)
+    }
+
+    fn link(&mut self, ino: u64, parent: DkDirHandle, name: &OsStr) -> DkResult<()> {
+        parent.add_entry(name, ino)?;
+        let file = self.open(ino, Flags::READ_ONLY)?;
+        file.inner.borrow_mut().inode.nlink += 1;
+        Ok(())
     }
 
     fn open(&mut self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
@@ -331,14 +341,16 @@ impl Donkey {
             Some(inner) => inner.clone(),
             None => {
                 let fh = self.open(ino, Flags::READ_WRITE)?;
-                let dir = DkDir::from_file(fh, self.close_dir_list.clone())?;
+                let mut dir = DkDir::from_file(fh, self.close_dir_list.clone())?;
+                dir.read_fully(self)?;
                 let rc = Rc::new(RefCell::new(dir));
                 self.opened_dirs.insert(ino, rc.clone());
                 rc
             }
         };
-        let dd = DkDirHandle { inner };
-        dd.read_fully(self)?;
+        let entries = inner.borrow().entries.clone();
+        let dd = DkDirHandle { inner, entries };
+
         Ok(dd)
     }
 }
@@ -482,6 +494,7 @@ pub mod block;
 pub mod device;
 pub mod file;
 pub mod ops;
+pub mod replies;
 
 #[cfg(test)]
 mod tests {}
