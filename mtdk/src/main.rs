@@ -236,7 +236,16 @@ impl Filesystem for DonkeyFuse {
     fn mkdir(&mut self, req: &Request, parent: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
         ino![parent];
         debug_params!(self.log; mkdir; req, parent, name, mode);
-        unimplemented!()
+        match self
+            .dk
+            .mkdir(parent, req.uid(), req.gid(), name, fuse2dk::file_mode(mode))
+        {
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {

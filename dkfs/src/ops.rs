@@ -2,7 +2,7 @@ use file::*;
 use replies::*;
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use *;
 
@@ -153,5 +153,19 @@ impl Handle {
         let file = &mut *fh.inner.borrow_mut();
         let mut io = DkFileIO { dk, file };
         Ok(io.write(data)?)
+    }
+
+    pub fn mkdir(
+        &self,
+        parent: u64,
+        uid: u32,
+        gid: u32,
+        name: &OsStr,
+        mode: FileMode,
+    ) -> DkResult<Stat> {
+        let ino = self.inner.borrow_mut().mkdir(parent, mode, uid, gid)?;
+        let parent = self.opendir(parent)?;
+        self.inner.borrow_mut().link(ino, parent, name)?;
+        self.getattr(ino)
     }
 }

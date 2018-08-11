@@ -303,8 +303,8 @@ impl Donkey {
     /// Returns the inode number of the new directory.
     /// This method **DOES NOT** link the new directory to
     /// the parent directory!
-    fn mkdir(&mut self, parent_ino: u64, perm: FileMode, uid: u32, gid: u32) -> DkResult<u64> {
-        let mode = FileMode::DIRECTORY | perm;
+    fn mkdir(&mut self, parent_ino: u64, mode: FileMode, uid: u32, gid: u32) -> DkResult<u64> {
+        let mode = FileMode::DIRECTORY | mode;
         let ino = self.mknod(mode, uid, gid, 0, None)?;
 
         // Create `.` and `..` entry
