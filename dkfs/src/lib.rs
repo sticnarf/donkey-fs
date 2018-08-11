@@ -11,27 +11,21 @@ extern crate failure;
 extern crate bincode;
 #[macro_use]
 extern crate nix;
-#[macro_use]
-extern crate slog;
-#[macro_use]
-extern crate slog_try;
 extern crate byteorder;
 extern crate im;
 
-use failure::Error;
-use slog::Logger;
-use std::ffi::OsStr;
-use std::io;
-use std::path::Path;
-use std::time::SystemTime;
-
 use block::*;
 use device::Device;
+use failure::Error;
 use file::{DkDir, DkDirHandle, DkFile, DkFileHandle};
 use std::cell::RefCell;
-use std::collections::hash_map::{self, HashMap};
+use std::collections::hash_map::HashMap;
+use std::ffi::OsStr;
+use std::io;
 use std::ops::Deref;
-use std::rc::{Rc, Weak};
+use std::path::Path;
+use std::rc::Rc;
+use std::time::SystemTime;
 
 const BOOT_BLOCK_SIZE: u64 = 1024;
 const SUPER_BLOCK_SIZE: u64 = 1024;
@@ -44,12 +38,14 @@ pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 /// small integers are reserved for special use.
 pub const ROOT_INODE: u64 = 114514;
 
+pub use ops::Handle;
+
 pub type DkResult<T> = std::result::Result<T, Error>;
 
 pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Handle> {
     let mut dev = device::open(dev_path)?;
     let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
-    Ok(Donkey::new(dev, sb))
+    Ok(Handle::new(Donkey::new(dev, sb)))
 }
 
 pub fn format<P: AsRef<Path>>(dev_path: P, opts: FormatOptions) -> DkResult<Handle> {
@@ -89,9 +85,9 @@ pub fn format<P: AsRef<Path>>(dev_path: P, opts: FormatOptions) -> DkResult<Hand
     };
     dev.write_at(&fb, first_db_ptr)?;
 
-    let dk = Donkey::new(dev, sb);
-    dk.borrow_mut().create_root()?;
-    Ok(dk)
+    let mut dk = Donkey::new(dev, sb);
+    dk.create_root()?;
+    Ok(Handle::new(dk))
 }
 
 #[derive(Debug)]
@@ -105,16 +101,15 @@ pub struct Donkey {
 }
 
 impl Donkey {
-    fn new(dev: Box<Device>, sb: SuperBlock) -> Handle {
-        let dk = Donkey {
+    fn new(dev: Box<Device>, sb: SuperBlock) -> Donkey {
+        Donkey {
             dev,
             sb,
             opened_files: HashMap::new(),
             opened_dirs: HashMap::new(),
             close_file_list: Rc::new(RefCell::new(Vec::new())),
             close_dir_list: Rc::new(RefCell::new(Vec::new())),
-        };
-        Handle::new(dk)
+        }
     }
 
     /// This function is only called in `format`
@@ -365,35 +360,6 @@ impl Drop for Donkey {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Handle {
-    inner: Rc<RefCell<Donkey>>,
-    log: Option<Logger>,
-}
-
-impl Deref for Handle {
-    type Target = RefCell<Donkey>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl Handle {
-    fn new(dk: Donkey) -> Self {
-        Handle {
-            inner: Rc::new(RefCell::new(dk)),
-            log: None,
-        }
-    }
-
-    pub fn log(&self, log: Logger) -> Self {
-        let mut handle = self.clone();
-        handle.log = Some(log);
-        handle
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct FormatOptions {
     bytes_per_inode: u64,
@@ -515,6 +481,7 @@ bitflags! {
 pub mod block;
 pub mod device;
 pub mod file;
+pub mod ops;
 
 #[cfg(test)]
 mod tests {}

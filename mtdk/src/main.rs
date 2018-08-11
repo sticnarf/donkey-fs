@@ -48,10 +48,7 @@ fn main() -> DkResult<()> {
         .collect::<Vec<&OsStr>>();
 
     dkfs::open(dev_path).and_then(|dk| {
-        let fuse = DonkeyFuse {
-            dk: dk.log(log.clone()),
-            log: log.clone(),
-        };
+        let fuse = DonkeyFuse { dk: dk, log };
         fuse::mount(fuse, &dir, &options)?;
         Ok(())
     })
