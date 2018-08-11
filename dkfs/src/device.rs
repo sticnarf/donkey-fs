@@ -65,7 +65,7 @@ pub trait Device: Read + Write + Seek + Debug {
     }
 }
 
-pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
+pub fn dev<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
     let file = OpenOptions::new().read(true).write(true).open(dev_path)?;
     let file_type = file.metadata()?.file_type();
     if file_type.is_file() {
@@ -236,10 +236,10 @@ impl Seek for BlockDevice {
 }
 
 #[derive(Debug)]
-struct Memory(Cursor<Vec<u8>>);
+pub struct Memory(Cursor<Vec<u8>>);
 
 impl Memory {
-    fn new(blocks: usize) -> Self {
+    pub fn new(blocks: usize) -> Self {
         Memory(Cursor::new(vec![0; blocks * 8]))
     }
 }

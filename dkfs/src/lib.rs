@@ -23,7 +23,6 @@ use std::collections::hash_map::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::ops::Deref;
-use std::path::Path;
 use std::rc::Rc;
 use std::time::SystemTime;
 
@@ -39,20 +38,18 @@ pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 pub const ROOT_INODE: u64 = 114514;
 const MAX_NAMELEN: u32 = 256;
 
+pub use device::dev;
 pub use file::{DkDirHandle, DkFileHandle};
 pub use ops::Handle;
 
 pub type DkResult<T> = std::result::Result<T, Error>;
 
-pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Handle> {
-    let mut dev = device::open(dev_path)?;
+pub fn open(mut dev: Box<Device>) -> DkResult<Handle> {
     let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
     Ok(Handle::new(Donkey::new(dev, sb)))
 }
 
-pub fn format<P: AsRef<Path>>(dev_path: P, opts: FormatOptions) -> DkResult<Handle> {
-    let mut dev = device::open(dev_path)?;
-
+pub fn format(mut dev: Box<Device>, opts: FormatOptions) -> DkResult<Handle> {
     let block_size = dev.block_size();
     let inode_count = dev.size() / opts.bytes_per_inode;
     let used_blocks = (FIRST_INODE_PTR + INODE_SIZE * inode_count + block_size - 1) / block_size;

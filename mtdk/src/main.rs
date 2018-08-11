@@ -50,16 +50,15 @@ fn main() -> DkResult<()> {
         .map(|o| OsStr::new(o))
         .collect::<Vec<&OsStr>>();
 
-    dkfs::open(dev_path).and_then(|dk| {
-        let fuse = DonkeyFuse {
-            dk: dk,
-            log,
-            dir_fh: HashMap::new(),
-            file_fh: HashMap::new(),
-        };
-        fuse::mount(fuse, &dir, &options)?;
-        Ok(())
-    })
+    let dk = dkfs::open(dev(dev_path)?)?;
+    let fuse = DonkeyFuse {
+        dk: dk,
+        log,
+        dir_fh: HashMap::new(),
+        file_fh: HashMap::new(),
+    };
+    fuse::mount(fuse, &dir, &options)?;
+    Ok(())
 }
 
 fn logger() -> Logger {
