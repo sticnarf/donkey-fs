@@ -154,7 +154,7 @@ impl DkFile {
         Ok(io.flush()?)
     }
 
-    fn update_size(&mut self, new_size: u64) -> DkResult<()> {
+    pub(crate) fn update_size(&mut self, new_size: u64) -> DkResult<()> {
         self.inode.size = new_size;
         Ok(())
         // TODO Release blocks when shrinking
@@ -164,7 +164,7 @@ impl DkFile {
 #[derive(Debug, Clone)]
 pub struct DkFileHandle {
     pub(crate) inner: Rc<RefCell<DkFile>>,
-    pub(crate) flags: Flags,
+    pub flags: Flags,
 }
 
 impl Deref for DkFileHandle {
@@ -272,7 +272,7 @@ impl Deref for DkDirHandle {
 }
 
 impl DkDirHandle {
-    pub fn add_entry(&self, name: &OsStr, ino: u64) -> DkResult<()> {
+    pub(crate) fn add_entry(&self, name: &OsStr, ino: u64) -> DkResult<()> {
         let res = match self.borrow_mut().entries.entry(name.to_os_string()) {
             ordmap::Entry::Vacant(e) => {
                 e.insert(ino);

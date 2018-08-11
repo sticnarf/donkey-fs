@@ -183,7 +183,25 @@ impl Filesystem for DonkeyFuse {
         ino![ino];
         debug_params!(self.log; setattr;
             req, ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags);
-        unimplemented!()
+        let fh = fh.and_then(|fh| self.file_fh.get(&fh)).map(|fh| fh.clone());
+        match self.dk.setattr(
+            ino,
+            fh,
+            mode.map(fuse2dk::file_mode),
+            uid,
+            gid,
+            size,
+            atime.map(fuse2dk::timespec),
+            mtime.map(fuse2dk::timespec),
+            chgtime.map(fuse2dk::timespec),
+            crtime.map(fuse2dk::timespec),
+        ) {
+            Ok(stat) => reply.attr(&TTL, &dk2fuse::file_attr(stat)),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
@@ -203,7 +221,16 @@ impl Filesystem for DonkeyFuse {
     ) {
         ino![parent];
         debug_params!(self.log; mknod; req, parent, name, mode, rdev);
-        unimplemented!()
+        match self
+            .dk
+            .mknod(req.uid(), req.gid(), parent, name, fuse2dk::file_mode(mode))
+        {
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn mkdir(&mut self, req: &Request, parent: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
@@ -253,8 +280,17 @@ impl Filesystem for DonkeyFuse {
 
     fn open(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
         ino![ino];
-        debug_params!(self.log; setattr; req, ino, flags);
-        unimplemented!()
+        debug_params!(self.log; open; req, ino, flags);
+        match self.dk.open(ino, fuse2dk::flags(flags)) {
+            Ok(fh) => {
+                reply.opened(req.unique(), dk2fuse::flags(fh.flags));
+                self.file_fh.insert(req.unique(), fh);
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(ENOENT);
+            }
+        }
     }
 
     fn read(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, size: u32, reply: ReplyData) {
@@ -281,7 +317,20 @@ impl Filesystem for DonkeyFuse {
     fn flush(&mut self, req: &Request, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; flush; req, ino, fh, lock_owner);
-        unimplemented!()
+        let fh = match self.file_fh.get(&fh) {
+            Some(fh) => fh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match self.dk.flush(fh.clone()) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn release(
@@ -296,7 +345,15 @@ impl Filesystem for DonkeyFuse {
     ) {
         ino![ino];
         debug_params!(self.log; release; req, ino, fh, flags, lock_owner, flush);
-        unimplemented!()
+        if let Some(_) = self.file_fh.remove(&fh) {
+            match self.dk.apply_releases() {
+                Ok(_) => reply.ok(),
+                Err(e) => {
+                    error!(self.log, "{}", e);
+                    reply.error(EIO);
+                }
+            }
+        }
     }
 
     fn fsync(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
@@ -457,7 +514,8 @@ impl Filesystem for DonkeyFuse {
     ) {
         ino![parent];
         debug_params!(self.log; create; req, parent, name, mode, flags);
-        unimplemented!()
+        // Returns ENOSYS to let fuse use mknod and open instead.
+        reply.error(ENOSYS);
     }
 
     fn getlk(

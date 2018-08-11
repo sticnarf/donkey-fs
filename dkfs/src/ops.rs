@@ -77,4 +77,60 @@ impl Handle {
     ) -> impl Iterator<Item = (OsString, u64)> {
         dir.entries.skip(offset).skip(offset).into_iter()
     }
+
+    pub fn mknod(
+        &self,
+        uid: u32,
+        gid: u32,
+        parent: u64,
+        name: &OsStr,
+        mode: FileMode,
+    ) -> DkResult<Stat> {
+        let parent = self.opendir(parent)?;
+        let ino = self.inner.borrow_mut().mknod(mode, uid, gid, 0, None)?;
+        self.inner.borrow_mut().link(ino, parent, name)?;
+        self.getattr(ino)
+    }
+
+    pub fn open(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
+        self.inner.borrow_mut().open(ino, flags)
+    }
+
+    pub fn flush(&self, fh: DkFileHandle) -> DkResult<()> {
+        let dk = &mut *self.inner.borrow_mut();
+        fh.inner.borrow_mut().flush(dk)
+    }
+
+    pub fn setattr(
+        &self,
+        ino: u64,
+        fh: Option<DkFileHandle>,
+        mode: Option<FileMode>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<DkTimespec>,
+        mtime: Option<DkTimespec>,
+        ctime: Option<DkTimespec>,
+        crtime: Option<DkTimespec>,
+    ) -> DkResult<Stat> {
+        let fh = match fh {
+            Some(fh) => fh,
+            None => self.open(ino, Flags::READ_ONLY)?,
+        };
+        fh.borrow_mut().dirty = true;
+        macro_rules! setattrs {
+            ($($i:ident),*) => {
+                $(
+                if let Some(v) = $i {
+                    fh.borrow_mut().inode.$i = v;
+                })*
+            };
+        }
+        setattrs![mode, uid, gid, atime, mtime, ctime, crtime];
+        if let Some(size) = size {
+            fh.borrow_mut().update_size(size)?;
+        }
+        self.getattr(ino)
+    }
 }
