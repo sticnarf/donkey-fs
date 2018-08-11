@@ -1,7 +1,7 @@
 use super::*;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
@@ -232,5 +232,46 @@ impl Write for BlockDevice {
 impl Seek for BlockDevice {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.file.seek(pos)
+    }
+}
+
+#[derive(Debug)]
+struct Memory(Cursor<Vec<u8>>);
+
+impl Memory {
+    fn new(blocks: usize) -> Self {
+        Memory(Cursor::new(vec![0; blocks * 8]))
+    }
+}
+
+impl Device for Memory {
+    fn block_count(&self) -> u64 {
+        self.0.get_ref().len() as u64 / 8
+    }
+
+    fn block_size(&self) -> u64 {
+        DEFAULT_BLOCK_SIZE
+    }
+}
+
+impl Read for Memory {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Write for Memory {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Seek for Memory {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.0.seek(pos)
     }
 }
