@@ -296,7 +296,20 @@ impl Filesystem for DonkeyFuse {
     fn read(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, size: u32, reply: ReplyData) {
         ino![ino];
         debug_params!(self.log; read; req, ino, fh, offset, size);
-        unimplemented!()
+        let fh = match self.file_fh.get(&fh) {
+            Some(fh) => fh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match self.dk.read(fh.clone(), offset as u64, size as u64) {
+            Ok(v) => reply.data(&v[..]),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn write(
@@ -310,8 +323,21 @@ impl Filesystem for DonkeyFuse {
         reply: ReplyWrite,
     ) {
         ino![ino];
-        debug_params!(self.log; write; req, ino, fh, offset, data, flags);
-        unimplemented!()
+        debug_params!(self.log; write; ino, fh, offset, flags);
+        let fh = match self.file_fh.get(&fh) {
+            Some(fh) => fh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match self.dk.write(fh.clone(), offset as u64, data) {
+            Ok(size) => reply.written(size as u32),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn flush(&mut self, req: &Request, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {

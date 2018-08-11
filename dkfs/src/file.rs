@@ -100,28 +100,34 @@ impl DkFile {
                 dk: &mut Donkey,
                 ptr: &mut u64,
                 block_count: &mut u64,
+                bs: u64,
+                zero: bool,
             ) -> DkResult<u64> {
                 if *ptr == 0 {
                     *ptr = dk.allocate_db()?;
+                    if zero {
+                        dk.fill_zero(*ptr, bs)?;
+                    }
                     *block_count += 1;
                 }
                 Ok(*ptr)
             }
-
+            println!("locate_rec level: {}, off: {}", level, off);
             let pc = bs / 8; // pointer count in a single block
             let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
             let i = off / sz; // index in the current level
             let block_off = off % sz;
+            println!("ptrs[{}]={}", i, ptrs[i as usize]);
             if level == 0 {
-                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count)?;
+                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, false)?;
                 Ok((ptr + block_off, bs - block_off))
             } else {
-                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count)?;
-                dk.fill_zero(ptr, bs)?;
-
-                // TODO Add cache
-                let mut ptrs: PtrBlock = dk.read(ptr)?;
-                locate_rec(dk, &mut ptrs[..], level - 1, block_off, block_count, bs)
+                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, true)?;
+                // TODO Add cache, delay writing
+                let mut ptrs: PtrBlock = dk.read_block(ptr)?;
+                let res = locate_rec(dk, &mut ptrs[..], level - 1, block_off, block_count, bs);
+                dk.write(ptr, &ptrs)?;
+                res
             }
         }
 
@@ -132,15 +138,25 @@ impl DkFile {
     }
 
     fn dk_read(&mut self, dk: &mut Donkey, buf: &mut [u8]) -> DkResult<usize> {
+        if self.pos >= self.inode.size {
+            return Ok(0);
+        }
         let (ptr, len) = self.locate(dk, self.pos)?;
+        println!("locate {} to {}", self.pos, ptr);
+        let len = min(len, self.inode.size - self.pos); // Cannot read beyond EOF
         let len = min(len as usize, buf.len());
-        Ok(dk.read_into(ptr, &mut buf[..len])? as usize)
+        println!("read {} at {}", len, ptr);
+        let read_len = dk.read_into(ptr, &mut buf[..len])?;
+        self.pos += read_len;
+        Ok(read_len as usize)
     }
 
     fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
         self.dirty = true;
         let (ptr, len) = self.locate(dk, self.pos)?;
+        println!("locate {} to {}", self.pos, ptr);
         let len = min(len as usize, buf.len());
+        println!("write {} at {}", len, ptr);
         dk.write(ptr, &RefData(&buf[..len]))?;
         self.pos += len as u64;
         if self.pos > self.inode.size {

@@ -2,7 +2,7 @@ use super::*;
 use bincode::{deserialize_from, serialize};
 use byteorder::{ByteOrder, LE};
 use std::fmt::Debug;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 pub trait Readable {
@@ -228,7 +228,8 @@ impl Readable for PtrBlock {
     where
         Self: Sized,
     {
-        let bytes = bytes.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
+        let read = BufReader::new(bytes);
+        let bytes = read.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
         let mut v = vec![0; bytes.len() / 8];
         LE::read_u64_into(&bytes[..], &mut v[..]);
         Ok(Data(v))

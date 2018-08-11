@@ -148,7 +148,12 @@ impl Donkey {
         <T as Readable>::from_bytes(self.dev.read_at(ptr)?)
     }
 
+    fn read_block<T: Readable>(&mut self, ptr: u64) -> DkResult<T> {
+        <T as Readable>::from_bytes(self.dev.read_block_at(ptr)?)
+    }
+
     fn write(&mut self, ptr: u64, writable: &Writable) -> DkResult<()> {
+        // println!("write {:?} at {}", writable, ptr);
         self.dev.write_at(writable, ptr)
     }
 

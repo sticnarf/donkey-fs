@@ -1,6 +1,8 @@
+use file::*;
 use replies::*;
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use *;
 
@@ -132,5 +134,24 @@ impl Handle {
             fh.borrow_mut().update_size(size)?;
         }
         self.getattr(ino)
+    }
+
+    pub fn read(&self, fh: DkFileHandle, offset: u64, size: u64) -> DkResult<Vec<u8>> {
+        let dk = &mut *self.inner.borrow_mut();
+        fh.inner.borrow_mut().seek(SeekFrom::Start(offset))?;
+        let file = &mut *fh.inner.borrow_mut();
+        let io = DkFileIO { dk, file };
+        let mut v = Vec::new();
+        let len = io.take(size).read_to_end(&mut v)?;
+        v.truncate(len);
+        Ok(v)
+    }
+
+    pub fn write(&self, fh: DkFileHandle, offset: u64, data: &[u8]) -> DkResult<usize> {
+        let dk = &mut *self.inner.borrow_mut();
+        fh.inner.borrow_mut().seek(SeekFrom::Start(offset))?;
+        let file = &mut *fh.inner.borrow_mut();
+        let mut io = DkFileIO { dk, file };
+        Ok(io.write(data)?)
     }
 }
