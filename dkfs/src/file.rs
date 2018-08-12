@@ -19,12 +19,12 @@ pub struct DkFile {
 }
 
 #[derive(Debug)]
-pub struct DkFileIO<'a> {
-    pub(crate) dk: &'a mut Donkey,
+pub struct DkFileIO<'a, 'b: 'a> {
+    pub(crate) dk: &'a mut Donkey<'b>,
     pub(crate) file: &'a mut DkFile,
 }
 
-impl<'a> Read for DkFileIO<'a> {
+impl<'a, 'b: 'a> Read for DkFileIO<'a, 'b> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.file.dk_read(self.dk, buf) {
             Ok(len) => Ok(len),
@@ -33,7 +33,7 @@ impl<'a> Read for DkFileIO<'a> {
     }
 }
 
-impl<'a> Write for DkFileIO<'a> {
+impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.file.dk_write(self.dk, buf) {
             Ok(len) => Ok(len),
@@ -112,12 +112,10 @@ impl DkFile {
                 }
                 Ok(*ptr)
             }
-            println!("locate_rec level: {}, off: {}", level, off);
             let pc = bs / 8; // pointer count in a single block
             let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
             let i = off / sz; // index in the current level
             let block_off = off % sz;
-            println!("ptrs[{}]={}", i, ptrs[i as usize]);
             if level == 0 {
                 let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, false)?;
                 Ok((ptr + block_off, bs - block_off))
@@ -142,10 +140,8 @@ impl DkFile {
             return Ok(0);
         }
         let (ptr, len) = self.locate(dk, self.pos)?;
-        println!("locate {} to {}", self.pos, ptr);
         let len = min(len, self.inode.size - self.pos); // Cannot read beyond EOF
         let len = min(len as usize, buf.len());
-        println!("read {} at {}", len, ptr);
         let read_len = dk.read_into(ptr, &mut buf[..len])?;
         self.pos += read_len;
         Ok(read_len as usize)
@@ -154,9 +150,7 @@ impl DkFile {
     fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
         self.dirty = true;
         let (ptr, len) = self.locate(dk, self.pos)?;
-        println!("locate {} to {}", self.pos, ptr);
         let len = min(len as usize, buf.len());
-        println!("write {} at {}", len, ptr);
         dk.write(ptr, &RefData(&buf[..len]))?;
         self.pos += len as u64;
         if self.pos > self.inode.size {

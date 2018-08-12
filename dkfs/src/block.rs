@@ -29,16 +29,16 @@ impl Writable for Box<Writable> {
 
 pub(crate) const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SuperBlock {
-    pub magic_number: u64,
-    pub block_size: u64,
-    pub inode_count: u64,
-    pub used_inode_count: u64,
-    pub db_count: u64,
-    pub used_db_count: u64,
-    pub inode_fl_ptr: u64,
-    pub db_fl_ptr: u64,
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub(crate) struct SuperBlock {
+    pub(crate) magic_number: u64,
+    pub(crate) block_size: u64,
+    pub(crate) inode_count: u64,
+    pub(crate) used_inode_count: u64,
+    pub(crate) db_count: u64,
+    pub(crate) used_db_count: u64,
+    pub(crate) inode_fl_ptr: u64,
+    pub(crate) db_fl_ptr: u64,
 }
 
 /// super block validation

@@ -12,3 +12,6 @@ bincode = "1.0.1"
 nix = "0.11.0"
 im = "11.0.1"
 byteorder = "1.2.4"
+
+[dev-dependencies]
+rand = "0.5"

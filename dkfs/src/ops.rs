@@ -7,12 +7,12 @@ use std::rc::Rc;
 use *;
 
 #[derive(Debug, Clone)]
-pub struct Handle {
-    inner: Rc<RefCell<Donkey>>,
+pub struct Handle<'a> {
+    pub(crate) inner: Rc<RefCell<Donkey<'a>>>,
 }
 
-impl Handle {
-    pub(crate) fn new(dk: Donkey) -> Self {
+impl<'a> Handle<'a> {
+    pub(crate) fn new(dk: Donkey<'a>) -> Self {
         Handle {
             inner: Rc::new(RefCell::new(dk)),
         }
@@ -152,7 +152,8 @@ impl Handle {
         fh.inner.borrow_mut().seek(SeekFrom::Start(offset))?;
         let file = &mut *fh.inner.borrow_mut();
         let mut io = DkFileIO { dk, file };
-        Ok(io.write(data)?)
+        io.write_all(data)?;
+        Ok(data.len())
     }
 
     pub fn mkdir(

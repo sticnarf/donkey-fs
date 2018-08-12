@@ -1,7 +1,7 @@
 use super::*;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
@@ -65,7 +65,7 @@ pub trait Device: Read + Write + Seek + Debug {
     }
 }
 
-pub fn open<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
+pub fn dev<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
     let file = OpenOptions::new().read(true).write(true).open(dev_path)?;
     let file_type = file.metadata()?.file_type();
     if file_type.is_file() {
@@ -232,5 +232,46 @@ impl Write for BlockDevice {
 impl Seek for BlockDevice {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.file.seek(pos)
+    }
+}
+
+#[derive(Debug)]
+pub struct Memory<'a>(Cursor<&'a mut [u8]>);
+
+impl<'a> Memory<'a> {
+    pub fn new(mem: &'a mut [u8]) -> Self {
+        Memory(Cursor::new(mem))
+    }
+}
+
+impl<'a> Device for Memory<'a> {
+    fn block_count(&self) -> u64 {
+        self.0.get_ref().len() as u64 / DEFAULT_BLOCK_SIZE
+    }
+
+    fn block_size(&self) -> u64 {
+        DEFAULT_BLOCK_SIZE
+    }
+}
+
+impl<'a> Read for Memory<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl<'a> Write for Memory<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<'a> Seek for Memory<'a> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.0.seek(pos)
     }
 }

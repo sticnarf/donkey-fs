@@ -1,6 +1,6 @@
 use *;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Statvfs {
     pub blocks: u64,
     pub bfree: u64,
@@ -11,7 +11,7 @@ pub struct Statvfs {
     pub namelen: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Stat {
     pub ino: u64,
     pub mode: FileMode,
