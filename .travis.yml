@@ -1,0 +1,9 @@
+dist: trusty
+sudo: required
+addons:
+  apt:
+    packages:
+      - libfuse-dev
+language: rust
+rust:
+  - nightly
