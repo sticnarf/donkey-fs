@@ -152,7 +152,8 @@ impl<'a> Handle<'a> {
         fh.inner.borrow_mut().seek(SeekFrom::Start(offset))?;
         let file = &mut *fh.inner.borrow_mut();
         let mut io = DkFileIO { dk, file };
-        Ok(io.write(data)?)
+        io.write_all(data)?;
+        Ok(data.len())
     }
 
     pub fn mkdir(

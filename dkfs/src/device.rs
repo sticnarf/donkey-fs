@@ -246,7 +246,7 @@ impl<'a> Memory<'a> {
 
 impl<'a> Device for Memory<'a> {
     fn block_count(&self) -> u64 {
-        self.0.get_ref().len() as u64 / 8
+        self.0.get_ref().len() as u64 / DEFAULT_BLOCK_SIZE
     }
 
     fn block_size(&self) -> u64 {

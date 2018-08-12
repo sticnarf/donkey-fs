@@ -150,7 +150,6 @@ impl<'a> Donkey<'a> {
     }
 
     fn write(&mut self, ptr: u64, writable: &Writable) -> DkResult<()> {
-        // println!("write {:?} at {}", writable, ptr);
         self.dev.write_at(writable, ptr)
     }
 
@@ -394,7 +393,7 @@ impl FormatOptions {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct DkTimespec {
     pub sec: i64,
     pub nsec: u32,
@@ -497,6 +496,3 @@ pub mod device;
 pub mod file;
 pub mod ops;
 pub mod replies;
-
-#[cfg(test)]
-mod tests;
