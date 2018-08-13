@@ -58,6 +58,7 @@ fn mknod_in_root() -> DkResult<()> {
     )?;
     assert_eq!(stat.uid, 0);
     assert_eq!(stat.gid, 0);
+    assert_eq!(stat.nlink, 1);
     assert!(stat.mode.is_regular_file());
     assert!(stat.mode.contains(FileMode::USER_RWX));
     assert_eq!(handle.getattr(stat.ino)?, stat);
@@ -325,5 +326,32 @@ fn xattrs() -> DkResult<()> {
     let v = handle.listxattr(stat.ino)?;
     let set: HashSet<_> = v.iter().map(|s| s.as_os_str()).collect();
     assert_eq!(set, [madoka, homura].iter().map(|s| *s).collect());
+    Ok(())
+}
+
+#[test]
+fn unlink() -> DkResult<()> {
+    prepare!(handle);
+    let mut names: HashSet<OsString> = [
+        "鹿目まどか",
+        "暁美ほむら",
+        "美樹さやか",
+        "佐倉杏子",
+        "巴マミ",
+    ]
+        .iter()
+        .map(|name| name.to_string().into())
+        .collect();
+    for name in &names {
+        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
+    }
+    let mami = OsStr::new("巴マミ");
+    handle.unlink(ROOT_INODE, mami)?;
+    names.remove(mami);
+    names.insert(".".to_string().into());
+    names.insert("..".to_string().into());
+    let dir = handle.opendir(ROOT_INODE)?;
+    let names_read: HashSet<OsString> = handle.readdir(dir, 0).map(|(name, _)| name).collect();
+    assert_eq!(names, names_read);
     Ok(())
 }

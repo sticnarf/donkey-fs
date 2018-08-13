@@ -251,7 +251,13 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![parent];
         debug_params!(self.log; unlink; req, parent, name);
-        unimplemented!()
+        match self.dk.unlink(parent, name) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {

@@ -216,4 +216,9 @@ impl<'a> Handle<'a> {
         dh.borrow_mut().flush(dk)?;
         self.fsync(dh.borrow().fh.clone(), datasync)
     }
+
+    pub fn unlink(&self, parent: u64, name: &OsStr) -> DkResult<()> {
+        let dh = self.opendir(parent)?;
+        self.inner.borrow_mut().unlink(dh, name)
+    }
 }

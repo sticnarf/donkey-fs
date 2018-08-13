@@ -168,6 +168,7 @@ impl<'a> Donkey<'a> {
                 Some(ino) => {
                     let drop = self.opened_files.get(&ino).and_then(|rc| {
                         if Rc::strong_count(rc) == 1 {
+                            // The only rc is in the HashMap
                             Some(rc.clone())
                         } else {
                             None
@@ -175,6 +176,9 @@ impl<'a> Donkey<'a> {
                     });
                     if let Some(rc) = drop {
                         rc.borrow_mut().flush(self)?;
+                        if rc.borrow().inode.nlink == 0 {
+                            rc.borrow_mut().destroy(self)?;
+                        }
                         self.opened_files.remove(&ino);
                     }
                 }
@@ -316,6 +320,18 @@ impl<'a> Donkey<'a> {
         parent.add_entry(name, ino)?;
         let file = self.open(ino, Flags::READ_ONLY)?;
         file.inner.borrow_mut().inode.nlink += 1;
+        file.inner.borrow_mut().dirty = true;
+        Ok(())
+    }
+
+    fn unlink(&mut self, parent: DkDirHandle, name: &OsStr) -> DkResult<()> {
+        let mut dir = parent.borrow_mut();
+        if let Some(ino) = dir.entries.remove(name) {
+            let fh = self.open(ino, Flags::READ_ONLY)?;
+            fh.inner.borrow_mut().inode.nlink -= 1;
+            fh.inner.borrow_mut().dirty = true;
+        }
+        dir.dirty = true;
         Ok(())
     }
 

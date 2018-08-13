@@ -43,7 +43,7 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.file.dirty {
+        if self.file.dirty && self.file.inode.nlink > 0 {
             let res = self
                 .file
                 .write_xattr(self.dk)
@@ -54,6 +54,7 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
                     format!("Failed to flush file of ino {}! {}", self.file.inode.ino, e),
                 ));
             }
+            self.file.dirty = false;
         }
         Ok(())
     }
@@ -110,6 +111,7 @@ impl DkFile {
             if self.inode.xattr_ptr != 0 {
                 dk.free_db(self.inode.xattr_ptr)?;
                 self.inode.xattr_ptr = 0;
+                self.dirty = true;
             }
         } else {
             let ptr = Self::ptr_or_allocate(
@@ -216,8 +218,18 @@ impl DkFile {
 
     pub(crate) fn update_size(&mut self, new_size: u64) -> DkResult<()> {
         self.inode.size = new_size;
+        self.dirty = true;
         Ok(())
         // TODO Release blocks when shrinking
+    }
+
+    pub(crate) fn destroy(&mut self, dk: &mut Donkey) -> DkResult<()> {
+        assert_eq!(self.inode.nlink, 0);
+        self.update_size(0)?; // Release used blocks
+        if self.inode.xattr_ptr != 0 {
+            dk.free_db(self.inode.xattr_ptr)?;
+        }
+        dk.free_inode(self.inode.ino)
     }
 }
 
