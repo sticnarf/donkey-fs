@@ -290,6 +290,7 @@ impl<'a> Donkey<'a> {
             size: 0,
             blocks: 0,
             device: rdev.unwrap_or(0),
+            xattr_ptr: 0,
             ptrs: Default::default(),
         };
         self.write_inode(&inode)?;
@@ -325,7 +326,8 @@ impl<'a> Donkey<'a> {
             Some(inner) => inner.clone(),
             None => {
                 let inode = self.read_inode(ino)?;
-                let f = DkFile::new(inode, self.close_file_list.clone());
+                let mut f = DkFile::new(inode, self.close_file_list.clone());
+                f.read_xattr(self)?;
                 let rc = Rc::new(RefCell::new(f));
                 self.opened_files.insert(ino, rc.clone());
                 rc
@@ -353,6 +355,28 @@ impl<'a> Donkey<'a> {
         let dd = DkDirHandle { inner, entries };
 
         Ok(dd)
+    }
+
+    fn free_inode(&mut self, ino: u64) -> DkResult<()> {
+        let new_fl = FreeList {
+            size: INODE_SIZE,
+            next_ptr: self.sb.inode_fl_ptr,
+        };
+        self.sb.inode_fl_ptr = Inode::ptr(ino);
+        self.write(self.sb.inode_fl_ptr, &new_fl)?;
+        self.sb.used_inode_count -= 1;
+        self.flush_sb()
+    }
+
+    fn free_db(&mut self, ptr: u64) -> DkResult<()> {
+        let new_fl = FreeList {
+            size: self.block_size(),
+            next_ptr: self.sb.db_fl_ptr,
+        };
+        self.sb.db_fl_ptr = ptr;
+        self.write(ptr, &new_fl)?;
+        self.sb.used_db_count -= 1;
+        self.flush_sb()
     }
 }
 

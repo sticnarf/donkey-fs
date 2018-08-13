@@ -4,7 +4,7 @@ use im::ordmap::{self, OrdMap};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::ffi::OsString;
-use std::io::{BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::ops::Drop;
 use std::rc::Rc;
 use *;
@@ -14,6 +14,7 @@ pub struct DkFile {
     /// Only used in `drop`
     pub(crate) inode: Inode,
     pub(crate) pos: u64,
+    pub(crate) xattr: OrdMap<OsString, Vec<u8>>,
     pub(crate) dirty: bool,
     pub(crate) close_file_list: Rc<RefCell<Vec<u64>>>,
 }
@@ -43,7 +44,11 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
 
     fn flush(&mut self) -> io::Result<()> {
         if self.file.dirty {
-            if let Err(e) = self.dk.write_inode(&self.file.inode) {
+            let res = self
+                .file
+                .write_xattr(self.dk)
+                .and_then(|_| self.dk.write_inode(&self.file.inode));
+            if let Err(e) = res {
                 return Err(io::Error::new(
                     ErrorKind::Other,
                     format!("Failed to flush file of ino {}! {}", self.file.inode.ino, e),
@@ -78,9 +83,68 @@ impl DkFile {
         DkFile {
             inode: inode,
             pos: 0,
+            xattr: OrdMap::new(),
             dirty: false,
             close_file_list,
         }
+    }
+
+    pub(crate) fn read_xattr(&mut self, dk: &mut Donkey) -> DkResult<()> {
+        if self.inode.xattr_ptr != 0 {
+            let data: ByteData = dk.read_block(self.inode.xattr_ptr)?;
+            let mut reader = Cursor::new(data.0.as_slice());
+            loop {
+                let key: OsString = deserialize_from(&mut reader)?;
+                if key.len() == 0 {
+                    break;
+                }
+                let value: Vec<u8> = deserialize_from(&mut reader)?;
+                self.xattr.insert(key, value);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_xattr(&mut self, dk: &mut Donkey) -> DkResult<()> {
+        if self.xattr.len() == 0 {
+            if self.inode.xattr_ptr != 0 {
+                dk.free_db(self.inode.xattr_ptr)?;
+                self.inode.xattr_ptr = 0;
+            }
+        } else {
+            let ptr = Self::ptr_or_allocate(
+                dk,
+                &mut self.inode.xattr_ptr,
+                &mut self.inode.blocks,
+                dk.block_size(),
+                false,
+            )?;
+            let mut data = Vec::new();
+            for (key, value) in &self.xattr {
+                serialize_into(&mut data, key)?;
+                serialize_into(&mut data, value)?;
+            }
+            serialize_into(&mut data, &OsString::new())?;
+            dk.write(ptr, &RefData(data.as_slice()))?;
+        }
+        Ok(())
+    }
+
+    fn ptr_or_allocate(
+        dk: &mut Donkey,
+        ptr: &mut u64,
+        block_count: &mut u64,
+        bs: u64,
+        zero: bool,
+    ) -> DkResult<u64> {
+        if *ptr == 0 {
+            *ptr = dk.allocate_db()?;
+            if zero {
+                dk.fill_zero(*ptr, bs)?;
+            }
+            *block_count += 1;
+        }
+        Ok(*ptr)
     }
 
     /// Specify the position of the file.
@@ -96,31 +160,17 @@ impl DkFile {
             block_count: &mut u64,
             bs: u64,
         ) -> DkResult<(u64, u64)> {
-            fn ptr_or_allocate(
-                dk: &mut Donkey,
-                ptr: &mut u64,
-                block_count: &mut u64,
-                bs: u64,
-                zero: bool,
-            ) -> DkResult<u64> {
-                if *ptr == 0 {
-                    *ptr = dk.allocate_db()?;
-                    if zero {
-                        dk.fill_zero(*ptr, bs)?;
-                    }
-                    *block_count += 1;
-                }
-                Ok(*ptr)
-            }
             let pc = bs / 8; // pointer count in a single block
             let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
             let i = off / sz; // index in the current level
             let block_off = off % sz;
             if level == 0 {
-                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, false)?;
+                let ptr =
+                    DkFile::ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, false)?;
                 Ok((ptr + block_off, bs - block_off))
             } else {
-                let ptr = ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, true)?;
+                let ptr =
+                    DkFile::ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, true)?;
                 // TODO Add cache, delay writing
                 let mut ptrs: PtrBlock = dk.read_block(ptr)?;
                 let res = locate_rec(dk, &mut ptrs[..], level - 1, block_off, block_count, bs);

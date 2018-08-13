@@ -75,6 +75,7 @@ pub struct Inode {
     pub blocks: u64,
     /// valid for device special files
     pub device: u64,
+    pub xattr_ptr: u64,
     pub ptrs: InodePtrs,
 }
 

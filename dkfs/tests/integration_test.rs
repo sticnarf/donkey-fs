@@ -310,3 +310,20 @@ fn read_write() -> DkResult<()> {
     }
     Ok(())
 }
+
+#[test]
+fn xattrs() -> DkResult<()> {
+    prepare!(handle);
+    let madoka = OsStr::new("Madoka");
+    let homura = OsStr::new("Homura");
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    assert!(handle.listxattr(stat.ino)?.is_empty());
+    assert_eq!(handle.getxattr(stat.ino, madoka)?, None);
+
+    handle.setxattr(stat.ino, madoka, "鹿目まどか".as_bytes())?;
+    handle.setxattr(stat.ino, homura, "暁美ほむら".as_bytes())?;
+    let v = handle.listxattr(stat.ino)?;
+    let set: HashSet<_> = v.iter().map(|s| s.as_os_str()).collect();
+    assert_eq!(set, [madoka, homura].iter().map(|s| *s).collect());
+    Ok(())
+}

@@ -14,6 +14,7 @@ use libc::*;
 use slog::{Drain, Logger};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 fn main() -> DkResult<()> {
@@ -331,7 +332,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         reply: ReplyWrite,
     ) {
         ino![ino];
-        debug_params!(self.log; write; ino, fh, offset, flags);
+        debug_params!(self.log; write; req, ino, fh, offset, data, flags);
         let fh = match self.file_fh.get(&fh) {
             Some(fh) => fh,
             None => {
@@ -506,28 +507,75 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![ino];
         debug_params!(self.log; setxattr; req, ino, name, value, flags, position);
-        unimplemented!()
+        match self.dk.setxattr(ino, name, value) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn getxattr(&mut self, req: &Request, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         ino![ino];
         debug_params!(self.log; getxattr; req, ino, name, size);
-        warn!(self.log, "Extra attributes are not supported.");
-        reply.error(ENOTSUP);
+        match self.dk.getxattr(ino, name) {
+            Ok(Some(v)) => {
+                if size == 0 {
+                    reply.size(v.len() as u32);
+                } else {
+                    if size > v.len() as u32 {
+                        reply.error(ERANGE);
+                    } else {
+                        reply.data(&v);
+                    }
+                }
+            }
+            Ok(None) => reply.error(ENOATTR),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn listxattr(&mut self, req: &Request, ino: u64, size: u32, reply: ReplyXattr) {
         ino![ino];
         debug_params!(self.log; listxattr; req, ino, size);
-        warn!(self.log, "Extra attributes are not supported.");
-        reply.error(ENOTSUP);
+        match self.dk.listxattr(ino) {
+            Ok(v) => {
+                let mut b = Vec::new();
+                for name in &v {
+                    b.extend_from_slice(name.as_bytes());
+                    b.push(0);
+                }
+                if size == 0 {
+                    reply.size(b.len() as u32);
+                } else {
+                    if size > b.len() as u32 {
+                        reply.error(ERANGE);
+                    } else {
+                        reply.data(&b);
+                    }
+                }
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn removexattr(&mut self, req: &Request, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; removexattr; req, ino, name);
-        warn!(self.log, "Extra attributes are not supported.");
-        reply.error(ENOTSUP);
+        match self.dk.removexattr(ino, name) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn access(&mut self, req: &Request, ino: u64, mask: u32, reply: ReplyEmpty) {

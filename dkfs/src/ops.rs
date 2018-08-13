@@ -169,4 +169,37 @@ impl<'a> Handle<'a> {
         self.inner.borrow_mut().link(ino, parent, name)?;
         self.getattr(ino)
     }
+
+    pub fn getxattr(&self, ino: u64, name: &OsStr) -> DkResult<Option<Vec<u8>>> {
+        let fh = self.open(ino, Flags::READ_ONLY)?;
+        let fh = fh.borrow();
+        Ok(fh.xattr.get(name).map(|v| v.clone()))
+    }
+
+    pub fn listxattr(&self, ino: u64) -> DkResult<Vec<OsString>> {
+        let v = self
+            .open(ino, Flags::READ_ONLY)?
+            .borrow()
+            .xattr
+            .keys()
+            .map(|key| key.to_owned())
+            .collect();
+        Ok(v)
+    }
+
+    pub fn setxattr(&self, ino: u64, name: &OsStr, value: &[u8]) -> DkResult<()> {
+        let fh = self.open(ino, Flags::READ_ONLY)?;
+        fh.borrow_mut().dirty = true;
+        fh.borrow_mut()
+            .xattr
+            .insert(name.to_owned(), Vec::from(value));
+        Ok(())
+    }
+
+    pub fn removexattr(&self, ino: u64, name: &OsStr) -> DkResult<()> {
+        let fh = self.open(ino, Flags::READ_ONLY)?;
+        fh.borrow_mut().dirty = true;
+        fh.borrow_mut().xattr.remove(name);
+        Ok(())
+    }
 }
