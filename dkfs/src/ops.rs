@@ -202,4 +202,18 @@ impl<'a> Handle<'a> {
         fh.borrow_mut().xattr.remove(name);
         Ok(())
     }
+
+    pub fn fsync(&self, fh: DkFileHandle, datasync: bool) -> DkResult<()> {
+        // Now we do not support data cache, so only metadata needs synchronizing
+        if !datasync {
+            self.flush(fh)?;
+        }
+        Ok(())
+    }
+
+    pub fn fsyncdir(&self, dh: DkDirHandle, datasync: bool) -> DkResult<()> {
+        let dk = &mut *self.inner.borrow_mut();
+        dh.borrow_mut().flush(dk)?;
+        self.fsync(dh.borrow().fh.clone(), datasync)
+    }
 }

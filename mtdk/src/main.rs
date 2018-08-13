@@ -394,7 +394,20 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn fsync(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; fsync; req, ino, fh, datasync);
-        unimplemented!()
+        let fh = match self.file_fh.get(&fh) {
+            Some(fh) => fh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match self.dk.fsync(fh.clone(), datasync) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn opendir(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
@@ -469,7 +482,20 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn fsyncdir(&mut self, req: &Request, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; fsyncdir; req, ino, fh, datasync);
-        unimplemented!()
+        let dh = match self.dir_fh.get(&fh) {
+            Some(dh) => dh,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        match self.dk.fsyncdir(dh.clone(), datasync) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn statfs(&mut self, req: &Request, ino: u64, reply: ReplyStatfs) {
