@@ -146,7 +146,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn forget(&mut self, req: &Request, ino: u64, nlookup: u64) {
         ino![ino];
         debug_params!(self.log; forget; req, ino, nlookup);
-        unimplemented!()
+        // Nothing to do
     }
 
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
