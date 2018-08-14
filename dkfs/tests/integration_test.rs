@@ -289,14 +289,12 @@ fn read_write() -> DkResult<()> {
             (name, data)
         }).collect();
     for (name, data) in &files {
-        println!("Write {:?}", name);
         let stat = handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
         let fh = handle.open(stat.ino, Flags::WRITE_ONLY)?;
         let len = handle.write(fh, 0, data)?;
         assert_eq!(len, data.len());
     }
     for (name, data) in &files {
-        println!("Read {:?}", name);
         let stat = handle.lookup(ROOT_INODE, name)?;
         let fh = handle.open(stat.ino, Flags::READ_ONLY)?;
         let mut offset = 0;

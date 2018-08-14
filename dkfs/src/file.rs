@@ -11,7 +11,6 @@ use *;
 
 #[derive(Debug)]
 pub struct DkFile {
-    /// Only used in `drop`
     pub(crate) inode: Inode,
     pub(crate) pos: u64,
     pub(crate) xattr: OrdMap<OsString, Vec<u8>>,
