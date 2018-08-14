@@ -141,7 +141,7 @@ impl DkFile {
         (pos + bs - 1) / pos
     }
 
-    fn level_off(&self, dk: &mut Donkey, bi: u64) -> (usize, usize) {
+    fn level_off(&self, dk: &Donkey, bi: u64) -> (usize, usize) {
         let mut bi = bi as usize;
         let pc = dk.block_size() as usize / 8;
         let mut multi = 1;
@@ -166,7 +166,7 @@ impl DkFile {
     }
 
     /// Returns cache ptr
-    fn load_ptrs_alloc(&mut self, dk: &mut Donkey, level: usize, ptr: u64) -> DkResult<(u64)> {
+    fn load_ptrs_alloc(&mut self, dk: &mut Donkey, level: usize, ptr: u64) -> DkResult<u64> {
         assert!(level > 0);
         if let Some((p, pb)) = &self.ptr_cache[level - 1] {
             if *p == ptr {
@@ -244,13 +244,95 @@ impl DkFile {
         }
     }
 
+    /// Returns cache ptr
+    fn load_ptrs(&mut self, dk: &mut Donkey, level: usize, ptr: u64) -> DkResult<Option<u64>> {
+        assert!(level > 0);
+        if ptr == 0 {
+            Ok(None)
+        } else {
+            if let Some((p, pb)) = &self.ptr_cache[level - 1] {
+                if *p == ptr {
+                    return Ok(Some(ptr));
+                } else {
+                    dk.write(*p, pb)?;
+                }
+            }
+            self.ptr_cache[level - 1] = Some((ptr, dk.read_block(ptr)?));
+            Ok(Some(ptr))
+        }
+    }
+
+    /// Returns whether trying to load an empty pointer.
+    fn load_ptrs_in_cache(
+        &mut self,
+        dk: &mut Donkey,
+        level: usize,
+        index: usize,
+    ) -> DkResult<bool> {
+        assert!(level > 1);
+        let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
+        if cache.0[index] == 0 {
+            Ok(false)
+        } else {
+            let new_ptr = cache.0[index];
+            if let Some((p, pb)) = &self.ptr_cache[level - 2] {
+                if *p == new_ptr {
+                    return Ok(true);
+                } else {
+                    dk.write(*p, pb)?;
+                }
+            }
+            let cache = dk.read_block(new_ptr)?;
+            self.ptr_cache[level - 2] = Some((new_ptr, cache));
+            Ok(true)
+        }
+    }
+
+    /// Without allocation
+    fn locate(&mut self, dk: &mut Donkey, bi: u64) -> DkResult<Option<u64>> {
+        let (mut level, mut off) = self.level_off(dk, bi);
+        if level == 0 {
+            if self.inode.ptrs[level][off] == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(self.inode.ptrs[level][off]))
+            }
+        } else {
+            if let Some(ptr) = self.load_ptrs(dk, level, self.inode.ptrs[level][0])? {
+                self.inode.ptrs[level][0] = ptr;
+            } else {
+                return Ok(None);
+            }
+            let pc = dk.block_size() as usize / 8;
+            let mut ipc = pc.pow(level as u32);
+            while level > 1 {
+                ipc /= pc;
+                off %= ipc;
+                if !self.load_ptrs_in_cache(dk, level, off / ipc)? {
+                    return Ok(None);
+                }
+                level -= 1;
+            }
+            let ref cache = self.ptr_cache[0].as_mut().unwrap().1;
+            if cache.0[off] == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(cache.0[off]))
+            }
+        }
+    }
+
     fn dk_read(&mut self, dk: &mut Donkey, buf: &mut [u8]) -> DkResult<usize> {
         if self.pos >= self.inode.size {
             return Ok(0);
         }
         let bs = dk.block_size();
         let (bi, bo) = Self::pos_to_block(self.pos, bs);
-        let ptr = self.locate_alloc(dk, bi)? + bo;
+        let block_ptr = self.locate(dk, bi)?;
+        let ptr = match block_ptr {
+            Some(ptr) => ptr + bo,
+            None => return Ok(0), // Nothing to read
+        };
         let len = min(bs - bo, self.inode.size - self.pos); // Cannot read beyond EOF
         let len = min(len as usize, buf.len());
         let read_len = dk.read_into(ptr, &mut buf[..len])?;
