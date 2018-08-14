@@ -278,7 +278,7 @@ fn traverse_big_dir() -> DkResult<()> {
 fn read_write() -> DkResult<()> {
     prepare!(handle);
     let mut rng = XorShiftRng::from_seed([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4]);
-    let files: BTreeMap<OsString, Vec<u8>> = (0..16)
+    let files: BTreeMap<OsString, Vec<u8>> = (0..=16)
         .map(|i| {
             let name = rng
                 .sample_iter(&Alphanumeric)
@@ -294,8 +294,11 @@ fn read_write() -> DkResult<()> {
         let len = handle.write(fh, 0, data)?;
         assert_eq!(len, data.len());
     }
+    // A rough estimate
+    assert!(handle.statfs()?.bfree < 2078);
     for (name, data) in &files {
         let stat = handle.lookup(ROOT_INODE, name)?;
+        assert!(stat.blocks >= stat.size / 512);
         let fh = handle.open(stat.ino, Flags::READ_ONLY)?;
         let mut offset = 0;
         loop {

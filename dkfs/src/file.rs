@@ -177,6 +177,7 @@ impl DkFile {
         }
         if ptr == 0 {
             let ptr = dk.allocate_db()?;
+            self.inode.blocks += 1;
             self.ptr_cache[level - 1] = Some((ptr, Self::empty_ptr_block(dk)));
             Ok(ptr)
         } else {
@@ -196,6 +197,7 @@ impl DkFile {
         let empty = cache.0[index] == 0;
         if empty {
             cache.0[index] = dk.allocate_db()?;
+            self.inode.blocks += 1;
         }
         let new_ptr = cache.0[index];
         if let Some((p, pb)) = &self.ptr_cache[level - 2] {
@@ -223,6 +225,7 @@ impl DkFile {
         if level == 0 {
             if self.inode.ptrs[level][off] == 0 {
                 self.inode.ptrs[level][off] = dk.allocate_db()?;
+                self.inode.blocks += 1;
             }
             Ok(self.inode.ptrs[level][off])
         } else {
@@ -239,6 +242,7 @@ impl DkFile {
             let ref mut cache = self.ptr_cache[0].as_mut().unwrap().1;
             if cache.0[off] == 0 {
                 cache.0[off] = dk.allocate_db()?;
+                self.inode.blocks += 1;
             }
             Ok(cache.0[off])
         }
@@ -365,8 +369,8 @@ impl DkFile {
         self.dirty = true;
         if old_size > new_size {
             let bs = dk.block_size();
-            let free_from = (old_size + bs - 1) / bs;
-            let free_to = (new_size + bs - 1) / bs;
+            let free_from = Self::pos_to_next_block(old_size, bs);
+            let free_to = Self::pos_to_next_block(new_size, bs);
             self.free_file_db(dk, free_from, free_to)?;
         }
         Ok(())
@@ -375,7 +379,12 @@ impl DkFile {
 
     /// `from` is inclusive, `to` is exclusive
     fn free_file_db(&mut self, dk: &mut Donkey, from: u64, to: u64) -> DkResult<()> {
-        unimplemented!()
+        for bi in from..to {
+            if let Some(ptr) = self.locate(dk, bi)? {
+                dk.free_db(ptr)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn destroy(&mut self, dk: &mut Donkey) -> DkResult<()> {
