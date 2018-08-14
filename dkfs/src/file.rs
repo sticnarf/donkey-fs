@@ -16,7 +16,7 @@ pub struct DkFile {
     pub(crate) xattr: OrdMap<OsString, Vec<u8>>,
     pub(crate) dirty: bool,
     pub(crate) close_file_list: Rc<RefCell<Vec<u64>>>,
-    pub(crate) ptr_cache: Option<(u64, PtrBlock)>,
+    pub(crate) ptr_cache: [Option<(u64, PtrBlock)>; 4],
 }
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ impl DkFile {
             xattr: OrdMap::new(),
             dirty: false,
             close_file_list,
-            ptr_cache: None,
+            ptr_cache: Default::default(),
         }
     }
 
@@ -157,15 +157,18 @@ impl DkFile {
     }
 
     fn write_ptr_cache(&mut self, dk: &mut Donkey) -> DkResult<()> {
-        if let Some((ptr, cache)) = self.ptr_cache.as_ref() {
-            dk.write(*ptr, cache)?;
+        for cache in &self.ptr_cache {
+            if let Some((ptr, cache)) = cache {
+                dk.write(*ptr, cache)?;
+            }
         }
         Ok(())
     }
 
     /// Returns cache ptr
-    fn load_ptrs_alloc(&mut self, dk: &mut Donkey, ptr: u64) -> DkResult<(u64)> {
-        if let Some((p, pb)) = self.ptr_cache.as_ref() {
+    fn load_ptrs_alloc(&mut self, dk: &mut Donkey, level: usize, ptr: u64) -> DkResult<(u64)> {
+        assert!(level > 0);
+        if let Some((p, pb)) = &self.ptr_cache[level - 1] {
             if *p == ptr {
                 return Ok(ptr);
             } else {
@@ -174,28 +177,40 @@ impl DkFile {
         }
         if ptr == 0 {
             let ptr = dk.allocate_db()?;
-            self.ptr_cache = Some((ptr, Self::empty_ptr_block(dk)));
+            self.ptr_cache[level - 1] = Some((ptr, Self::empty_ptr_block(dk)));
             Ok(ptr)
         } else {
-            self.ptr_cache = Some((ptr, dk.read_block(ptr)?));
+            self.ptr_cache[level - 1] = Some((ptr, dk.read_block(ptr)?));
             Ok(ptr)
         }
     }
 
-    fn load_ptrs_in_cache_alloc(&mut self, dk: &mut Donkey, index: usize) -> DkResult<()> {
-        let (ptr, cache) = self.ptr_cache.as_mut().unwrap();
+    fn load_ptrs_in_cache_alloc(
+        &mut self,
+        dk: &mut Donkey,
+        level: usize,
+        index: usize,
+    ) -> DkResult<()> {
+        assert!(level > 1);
+        let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
         let empty = cache.0[index] == 0;
         if empty {
             cache.0[index] = dk.allocate_db()?;
         }
         let new_ptr = cache.0[index];
-        dk.write(*ptr, cache)?;
+        if let Some((p, pb)) = &self.ptr_cache[level - 2] {
+            if *p == new_ptr {
+                return Ok(());
+            } else {
+                dk.write(*p, pb)?;
+            }
+        }
         let cache = if empty {
             Self::empty_ptr_block(dk)
         } else {
             dk.read_block(new_ptr)?
         };
-        self.ptr_cache = Some((new_ptr, cache));
+        self.ptr_cache[level - 2] = Some((new_ptr, cache));
         Ok(())
     }
 
@@ -205,23 +220,23 @@ impl DkFile {
 
     fn locate_alloc(&mut self, dk: &mut Donkey, bi: u64) -> DkResult<u64> {
         let (mut level, mut off) = self.level_off(dk, bi);
-
         if level == 0 {
             if self.inode.ptrs[level][off] == 0 {
                 self.inode.ptrs[level][off] = dk.allocate_db()?;
             }
             Ok(self.inode.ptrs[level][off])
         } else {
-            self.inode.ptrs[level][0] = self.load_ptrs_alloc(dk, self.inode.ptrs[level][0])?;
+            self.inode.ptrs[level][0] =
+                self.load_ptrs_alloc(dk, level, self.inode.ptrs[level][0])?;
             let pc = dk.block_size() as usize / 8;
             let mut ipc = pc.pow(level as u32);
             while level > 1 {
                 ipc /= pc;
                 off %= ipc;
+                self.load_ptrs_in_cache_alloc(dk, level, off / ipc)?;
                 level -= 1;
-                self.load_ptrs_in_cache_alloc(dk, off / ipc)?;
             }
-            let ref mut cache = self.ptr_cache.as_mut().unwrap().1;
+            let ref mut cache = self.ptr_cache[0].as_mut().unwrap().1;
             if cache.0[off] == 0 {
                 cache.0[off] = dk.allocate_db()?;
             }
