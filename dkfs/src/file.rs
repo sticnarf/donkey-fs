@@ -17,6 +17,7 @@ pub struct DkFile {
     pub(crate) xattr: OrdMap<OsString, Vec<u8>>,
     pub(crate) dirty: bool,
     pub(crate) close_file_list: Rc<RefCell<Vec<u64>>>,
+    pub(crate) ptr_cache: Option<(u64, PtrBlock)>,
 }
 
 #[derive(Debug)]
@@ -46,7 +47,8 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
         if self.file.dirty && self.file.inode.nlink > 0 {
             let res = self
                 .file
-                .write_xattr(self.dk)
+                .write_ptr_cache(self.dk)
+                .and_then(|_| self.file.write_xattr(self.dk))
                 .and_then(|_| self.dk.write_inode(&self.file.inode));
             if let Err(e) = res {
                 return Err(io::Error::new(
@@ -87,6 +89,7 @@ impl DkFile {
             xattr: OrdMap::new(),
             dirty: false,
             close_file_list,
+            ptr_cache: None,
         }
     }
 
@@ -114,85 +117,127 @@ impl DkFile {
                 self.dirty = true;
             }
         } else {
-            let ptr = Self::ptr_or_allocate(
-                dk,
-                &mut self.inode.xattr_ptr,
-                &mut self.inode.blocks,
-                dk.block_size(),
-                false,
-            )?;
+            if self.inode.xattr_ptr == 0 {
+                self.inode.xattr_ptr = dk.allocate_db()?;
+                self.inode.blocks += 1;
+            }
             let mut data = Vec::new();
             for (key, value) in &self.xattr {
                 serialize_into(&mut data, key)?;
                 serialize_into(&mut data, value)?;
             }
             serialize_into(&mut data, &OsString::new())?;
-            dk.write(ptr, &RefData(data.as_slice()))?;
+            dk.write(self.inode.xattr_ptr, &RefData(data.as_slice()))?;
         }
         Ok(())
     }
 
-    fn ptr_or_allocate(
-        dk: &mut Donkey,
-        ptr: &mut u64,
-        block_count: &mut u64,
-        bs: u64,
-        zero: bool,
-    ) -> DkResult<u64> {
-        if *ptr == 0 {
-            *ptr = dk.allocate_db()?;
-            if zero {
-                dk.fill_zero(*ptr, bs)?;
-            }
-            *block_count += 1;
-        }
-        Ok(*ptr)
+    /// Get the block index and offset at `pos`
+    fn pos_to_block(pos: u64, bs: u64) -> (u64, u64) {
+        (pos / bs, pos % bs)
     }
 
-    /// Specify the position of the file.
-    /// Returns the real pointer and how many bytes in maximum
-    /// you can read or write from this pointer.
-    /// This function allocates blocks if necessary.
-    fn locate(&mut self, dk: &mut Donkey, pos: u64) -> DkResult<(u64, u64)> {
-        fn locate_rec(
-            dk: &mut Donkey,
-            ptrs: &mut [u64],
-            level: u32,
-            off: u64,
-            block_count: &mut u64,
-            bs: u64,
-        ) -> DkResult<(u64, u64)> {
-            let pc = bs / 8; // pointer count in a single block
-            let sz = bs * pc.pow(level); // size of all blocks through the direct or indirect pointer
-            let i = off / sz; // index in the current level
-            let block_off = off % sz;
-            if level == 0 {
-                let ptr =
-                    DkFile::ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, false)?;
-                Ok((ptr + block_off, bs - block_off))
+    /// Get the next block index after pos
+    fn pos_to_next_block(pos: u64, bs: u64) -> u64 {
+        (pos + bs - 1) / pos
+    }
+
+    fn level_off(&self, dk: &mut Donkey, bi: u64) -> (usize, usize) {
+        let mut bi = bi as usize;
+        let pc = dk.block_size() as usize / 8;
+        let mut multi = 1;
+        for level in 0..=4 {
+            let len = self.inode.ptrs[level].len() * multi;
+            if bi < len {
+                return (level, bi);
+            }
+            bi -= len;
+            multi *= pc;
+        }
+        unreachable!()
+    }
+
+    fn write_ptr_cache(&mut self, dk: &mut Donkey) -> DkResult<()> {
+        if let Some((ptr, cache)) = self.ptr_cache.as_ref() {
+            dk.write(*ptr, cache)?;
+        }
+        Ok(())
+    }
+
+    /// Returns cache ptr
+    fn load_ptrs_alloc(&mut self, dk: &mut Donkey, ptr: u64) -> DkResult<(u64)> {
+        if let Some((p, pb)) = self.ptr_cache.as_ref() {
+            if *p == ptr {
+                return Ok(ptr);
             } else {
-                let ptr =
-                    DkFile::ptr_or_allocate(dk, &mut ptrs[i as usize], block_count, bs, true)?;
-                // TODO Add cache, delay writing
-                let mut ptrs: PtrBlock = dk.read_block(ptr)?;
-                let res = locate_rec(dk, &mut ptrs[..], level - 1, block_off, block_count, bs);
-                dk.write(ptr, &ptrs)?;
-                res
+                dk.write(*p, pb)?;
             }
         }
+        if ptr == 0 {
+            let ptr = dk.allocate_db()?;
+            self.ptr_cache = Some((ptr, Self::empty_ptr_block(dk)));
+            Ok(ptr)
+        } else {
+            self.ptr_cache = Some((ptr, dk.read_block(ptr)?));
+            Ok(ptr)
+        }
+    }
 
-        let bs = dk.block_size();
-        let ptrs = &mut self.inode.ptrs;
-        let (level, off) = ptrs.locate(pos, bs);
-        locate_rec(dk, &mut ptrs[level], level, off, &mut self.inode.blocks, bs)
+    fn load_ptrs_in_cache_alloc(&mut self, dk: &mut Donkey, index: usize) -> DkResult<()> {
+        let (ptr, cache) = self.ptr_cache.as_mut().unwrap();
+        let empty = cache.0[index] == 0;
+        if empty {
+            cache.0[index] = dk.allocate_db()?;
+        }
+        let new_ptr = cache.0[index];
+        dk.write(*ptr, cache)?;
+        let cache = if empty {
+            Self::empty_ptr_block(dk)
+        } else {
+            dk.read_block(new_ptr)?
+        };
+        self.ptr_cache = Some((new_ptr, cache));
+        Ok(())
+    }
+
+    fn empty_ptr_block(dk: &Donkey) -> PtrBlock {
+        Data(vec![0; dk.block_size() as usize / 8])
+    }
+
+    fn locate_alloc(&mut self, dk: &mut Donkey, bi: u64) -> DkResult<u64> {
+        let (mut level, mut off) = self.level_off(dk, bi);
+
+        if level == 0 {
+            if self.inode.ptrs[level][off] == 0 {
+                self.inode.ptrs[level][off] = dk.allocate_db()?;
+            }
+            Ok(self.inode.ptrs[level][off])
+        } else {
+            self.inode.ptrs[level][0] = self.load_ptrs_alloc(dk, self.inode.ptrs[level][0])?;
+            let pc = dk.block_size() as usize / 8;
+            let mut ipc = pc.pow(level as u32);
+            while level > 1 {
+                ipc /= pc;
+                off %= ipc;
+                level -= 1;
+                self.load_ptrs_in_cache_alloc(dk, off / ipc)?;
+            }
+            let ref mut cache = self.ptr_cache.as_mut().unwrap().1;
+            if cache.0[off] == 0 {
+                cache.0[off] = dk.allocate_db()?;
+            }
+            Ok(cache.0[off])
+        }
     }
 
     fn dk_read(&mut self, dk: &mut Donkey, buf: &mut [u8]) -> DkResult<usize> {
         if self.pos >= self.inode.size {
             return Ok(0);
         }
-        let (ptr, len) = self.locate(dk, self.pos)?;
-        let len = min(len, self.inode.size - self.pos); // Cannot read beyond EOF
+        let bs = dk.block_size();
+        let (bi, bo) = Self::pos_to_block(self.pos, bs);
+        let ptr = self.locate_alloc(dk, bi)? + bo;
+        let len = min(bs - bo, self.inode.size - self.pos); // Cannot read beyond EOF
         let len = min(len as usize, buf.len());
         let read_len = dk.read_into(ptr, &mut buf[..len])?;
         self.pos += read_len;
@@ -201,12 +246,14 @@ impl DkFile {
 
     fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
         self.dirty = true;
-        let (ptr, len) = self.locate(dk, self.pos)?;
-        let len = min(len as usize, buf.len());
+        let bs = dk.block_size();
+        let (bi, bo) = Self::pos_to_block(self.pos, bs);
+        let ptr = self.locate_alloc(dk, bi)? + bo;
+        let len = min((bs - bo) as usize, buf.len());
         dk.write(ptr, &RefData(&buf[..len]))?;
         self.pos += len as u64;
         if self.pos > self.inode.size {
-            self.update_size(self.pos)?;
+            self.update_size(dk, self.pos)?;
         }
         Ok(len)
     }
@@ -216,16 +263,28 @@ impl DkFile {
         Ok(io.flush()?)
     }
 
-    pub(crate) fn update_size(&mut self, new_size: u64) -> DkResult<()> {
+    pub(crate) fn update_size(&mut self, dk: &mut Donkey, new_size: u64) -> DkResult<()> {
+        let old_size = self.inode.size;
         self.inode.size = new_size;
         self.dirty = true;
+        if old_size > new_size {
+            let bs = dk.block_size();
+            let free_from = (old_size + bs - 1) / bs;
+            let free_to = (new_size + bs - 1) / bs;
+            self.free_file_db(dk, free_from, free_to)?;
+        }
         Ok(())
         // TODO Release blocks when shrinking
     }
 
+    /// `from` is inclusive, `to` is exclusive
+    fn free_file_db(&mut self, dk: &mut Donkey, from: u64, to: u64) -> DkResult<()> {
+        unimplemented!()
+    }
+
     pub(crate) fn destroy(&mut self, dk: &mut Donkey) -> DkResult<()> {
         assert_eq!(self.inode.nlink, 0);
-        self.update_size(0)?; // Release used blocks
+        self.update_size(dk, 0)?; // Release used blocks
         if self.inode.xattr_ptr != 0 {
             dk.free_db(self.inode.xattr_ptr)?;
         }

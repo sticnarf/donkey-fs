@@ -264,12 +264,6 @@ impl<'a> Donkey<'a> {
         }
     }
 
-    fn fill_zero(&mut self, ptr: u64, size: u64) -> DkResult<()> {
-        let v = vec![0u8; size as usize];
-        let b = RefData(v.as_slice());
-        self.write(ptr, &b)
-    }
-
     /// Returns the inode number of the new node.
     fn mknod(
         &mut self,

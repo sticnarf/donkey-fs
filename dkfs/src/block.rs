@@ -106,10 +106,25 @@ impl Inode {
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct InodePtrs([u64; 12], [u64; 1], [u64; 1], [u64; 1], [u64; 1]);
 
-impl Index<u32> for InodePtrs {
+// impl Index<u32> for InodePtrs {
+//     type Output = [u64];
+
+//     fn index(&self, index: u32) -> &[u64] {
+//         match index {
+//             0 => &self.0,
+//             1 => &self.1,
+//             2 => &self.2,
+//             3 => &self.3,
+//             4 => &self.4,
+//             _ => unreachable!(),
+//         }
+//     }
+// }
+
+impl Index<usize> for InodePtrs {
     type Output = [u64];
 
-    fn index(&self, index: u32) -> &[u64] {
+    fn index(&self, index: usize) -> &[u64] {
         match index {
             0 => &self.0,
             1 => &self.1,
@@ -121,8 +136,8 @@ impl Index<u32> for InodePtrs {
     }
 }
 
-impl IndexMut<u32> for InodePtrs {
-    fn index_mut(&mut self, index: u32) -> &mut [u64] {
+impl IndexMut<usize> for InodePtrs {
+    fn index_mut(&mut self, index: usize) -> &mut [u64] {
         match index {
             0 => &mut self.0,
             1 => &mut self.1,
@@ -131,26 +146,6 @@ impl IndexMut<u32> for InodePtrs {
             4 => &mut self.4,
             _ => unreachable!(),
         }
-    }
-}
-
-impl InodePtrs {
-    /// Given the position of the file and the block size,
-    /// returns the level and the offset
-    pub fn locate(&self, mut pos: u64, bs: u64) -> (u32, u64) {
-        let pc = bs / 8; // Pointer count in a single block
-        let mut b = pos / bs; // index of block at pos
-        let mut sz = bs; // Size of all blocks through the direct or indirect pointer
-        for i in 0..5 {
-            let len = self[i].len() as u64;
-            if b < len {
-                return (i, pos);
-            }
-            b = (b - len) / pc;
-            pos -= len * sz;
-            sz *= pc;
-        }
-        unreachable!()
     }
 }
 
@@ -254,20 +249,6 @@ impl<'b> Writable for RefData<'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn inode_ptrs_locate() {
-        let p = InodePtrs::default();
-        assert_eq!(p.locate(0, 4096), (0, 0));
-        assert_eq!(p.locate(29906, 4096), (0, 29906));
-        assert_eq!(p.locate(49152, 4096), (1, 0));
-        assert_eq!(p.locate(60554, 4096), (1, 11402));
-        assert_eq!(p.locate(2146304, 4096), (2, 0));
-        assert_eq!(p.locate(1075888127, 4096), (2, 1073741823));
-        assert_eq!(p.locate(1075888128, 4096), (3, 0));
-        assert_eq!(p.locate(550831702015, 4096), (3, 549755813887));
-        assert_eq!(p.locate(550831702016, 4096), (4, 0));
-        assert_eq!(p.locate(282025808412671, 4096), (4, 281474976710655));
-    }
 
     #[test]
     fn serde_ptr_block() -> DkResult<()> {

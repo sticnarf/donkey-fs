@@ -5,8 +5,9 @@ use dkfs::device::Memory;
 use dkfs::replies::*;
 use dkfs::*;
 use rand::distributions::{Alphanumeric, Standard};
-use rand::{thread_rng, Rng};
-use std::collections::{HashMap, HashSet};
+use rand::prng::XorShiftRng;
+use rand::{thread_rng, Rng, SeedableRng};
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 
 macro_rules! prepare {
@@ -276,8 +277,8 @@ fn traverse_big_dir() -> DkResult<()> {
 #[test]
 fn read_write() -> DkResult<()> {
     prepare!(handle);
-    let mut rng = thread_rng();
-    let files: HashMap<OsString, Vec<u8>> = (0..16)
+    let mut rng = XorShiftRng::from_seed([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4]);
+    let files: BTreeMap<OsString, Vec<u8>> = (0..16)
         .map(|i| {
             let name = rng
                 .sample_iter(&Alphanumeric)

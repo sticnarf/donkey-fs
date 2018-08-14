@@ -131,7 +131,8 @@ impl<'a> Handle<'a> {
         }
         setattrs![mode, uid, gid, atime, mtime, ctime, crtime];
         if let Some(size) = size {
-            fh.borrow_mut().update_size(size)?;
+            let dk = &mut *self.inner.borrow_mut();
+            fh.borrow_mut().update_size(dk, size)?;
         }
         self.getattr(ino)
     }
