@@ -253,6 +253,7 @@ impl<'a> Donkey<'a> {
     /// Returns the pointer of the allocated data block
     fn allocate_db(&mut self) -> DkResult<u64> {
         if self.sb.used_db_count < self.sb.db_count {
+            println!("Allocate DB!");
             let fl_ptr = self.sb.db_fl_ptr;
             let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, self.block_size())?;
             self.sb.db_fl_ptr = new_fl_ptr;
@@ -344,6 +345,7 @@ impl<'a> Donkey<'a> {
             }
         };
         let df = DkFileHandle { inner, flags };
+
         Ok(df)
     }
 

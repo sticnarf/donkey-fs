@@ -277,7 +277,7 @@ fn traverse_big_dir() -> DkResult<()> {
 #[test]
 fn read_write() -> DkResult<()> {
     prepare!(handle);
-    let mut rng = XorShiftRng::from_seed([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4]);
+    let mut rng = XorShiftRng::from_seed([1, 1, 4, 5, 1, 4, 1, 9, 1, 9, 8, 1, 0, 8, 9, 3]);
     let files: BTreeMap<OsString, Vec<u8>> = (0..=16)
         .map(|i| {
             let name = rng
@@ -300,6 +300,13 @@ fn read_write() -> DkResult<()> {
         let stat = handle.lookup(ROOT_INODE, name)?;
         assert!(stat.blocks >= stat.size / 512);
         let fh = handle.open(stat.ino, Flags::READ_ONLY)?;
+
+        // Read once
+        let read = handle.read(fh.clone(), 0, data.len() as u64)?;
+        assert_eq!(read.len(), data.len());
+        assert_eq!(&read, data);
+
+        // Offset read
         let mut offset = 0;
         loop {
             let read = handle.read(fh.clone(), offset as u64, 4096)?;
@@ -355,5 +362,48 @@ fn unlink() -> DkResult<()> {
     let dir = handle.opendir(ROOT_INODE)?;
     let names_read: HashSet<OsString> = handle.readdir(dir, 0).map(|(name, _)| name).collect();
     assert_eq!(names, names_read);
+    Ok(())
+}
+
+#[test]
+fn shrink_size() -> DkResult<()> {
+    prepare!(handle);
+
+    let mut rng = XorShiftRng::from_seed([1, 1, 4, 5, 1, 4, 1, 9, 1, 9, 8, 1, 0, 8, 9, 3]);
+    let homura = OsStr::new("Homura");
+    let data: Vec<u8> = rng.sample_iter(&Standard).take(1 << 24).collect(); // 16 MB
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    let statfs = handle.statfs()?;
+    println!("{:?}", handle.statfs()?);
+
+    let fh = handle.open(stat.ino, Flags::WRITE_ONLY)?;
+    let len = handle.write(fh.clone(), 0, &data)?;
+    assert_eq!(len, data.len());
+    println!("{:?}", handle.getattr(stat.ino)?);
+    assert_ne!(handle.statfs()?, statfs);
+    drop(fh);
+    assert_ne!(handle.statfs()?, statfs);
+
+    let fh = handle.open(stat.ino, Flags::READ_ONLY)?;
+    let read = handle.read(fh, 0, data.len() as u64)?;
+    assert_eq!(data.len(), read.len());
+
+    handle.setattr(
+        stat.ino,
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        None,
+        None,
+        None,
+        None,
+    )?; // Set size to 0
+    println!("{:?}", handle.getattr(stat.ino)?);
+    assert_eq!(handle.getattr(stat.ino)?.size, 0);
+    assert_eq!(handle.getattr(stat.ino)?.blocks, 0);
+    assert_eq!(handle.statfs()?, statfs);
+
     Ok(())
 }

@@ -2,7 +2,7 @@ use bincode::{deserialize_from, serialize_into};
 use block::*;
 use im::ordmap::{self, OrdMap};
 use std::cell::RefCell;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::ffi::OsString;
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::ops::Drop;
@@ -132,13 +132,13 @@ impl DkFile {
     }
 
     /// Get the block index and offset at `pos`
-    fn pos_to_block(pos: u64, bs: u64) -> (u64, u64) {
+    fn block_of_pos(pos: u64, bs: u64) -> (u64, u64) {
         (pos / bs, pos % bs)
     }
 
     /// Get the next block index after pos
-    fn pos_to_next_block(pos: u64, bs: u64) -> u64 {
-        (pos + bs - 1) / pos
+    fn next_block_of_pos(pos: u64, bs: u64) -> u64 {
+        (pos + bs - 1) / bs
     }
 
     fn level_off(&self, dk: &Donkey, bi: u64) -> (usize, usize) {
@@ -221,7 +221,7 @@ impl DkFile {
     }
 
     fn locate_alloc(&mut self, dk: &mut Donkey, bi: u64) -> DkResult<u64> {
-        let (mut level, mut off) = self.level_off(dk, bi);
+        let (mut level, mut off) = self.level_off(dk, bi); // 512
         if level == 0 {
             if self.inode.ptrs[level][off] == 0 {
                 self.inode.ptrs[level][off] = dk.allocate_db()?;
@@ -235,8 +235,8 @@ impl DkFile {
             let mut ipc = pc.pow(level as u32);
             while level > 1 {
                 ipc /= pc;
-                off %= ipc;
                 self.load_ptrs_in_cache_alloc(dk, level, off / ipc)?;
+                off %= ipc;
                 level -= 1;
             }
             let ref mut cache = self.ptr_cache[0].as_mut().unwrap().1;
@@ -311,10 +311,10 @@ impl DkFile {
             let mut ipc = pc.pow(level as u32);
             while level > 1 {
                 ipc /= pc;
-                off %= ipc;
                 if !self.load_ptrs_in_cache(dk, level, off / ipc)? {
                     return Ok(None);
                 }
+                off %= ipc;
                 level -= 1;
             }
             let ref cache = self.ptr_cache[0].as_mut().unwrap().1;
@@ -331,7 +331,7 @@ impl DkFile {
             return Ok(0);
         }
         let bs = dk.block_size();
-        let (bi, bo) = Self::pos_to_block(self.pos, bs);
+        let (bi, bo) = Self::block_of_pos(self.pos, bs);
         let block_ptr = self.locate(dk, bi)?;
         let ptr = match block_ptr {
             Some(ptr) => ptr + bo,
@@ -344,10 +344,18 @@ impl DkFile {
         Ok(read_len as usize)
     }
 
+    fn debug_a(&mut self) {
+        println!("!!!");
+    }
+
     fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
+        println!("Write {} bytes at {}", buf.len(), self.pos);
+        if self.pos == 4243456 {
+            self.debug_a();
+        }
         self.dirty = true;
         let bs = dk.block_size();
-        let (bi, bo) = Self::pos_to_block(self.pos, bs);
+        let (bi, bo) = Self::block_of_pos(self.pos, bs);
         let ptr = self.locate_alloc(dk, bi)? + bo;
         let len = min((bs - bo) as usize, buf.len());
         dk.write(ptr, &RefData(&buf[..len]))?;
@@ -369,8 +377,8 @@ impl DkFile {
         self.dirty = true;
         if old_size > new_size {
             let bs = dk.block_size();
-            let free_from = Self::pos_to_next_block(old_size, bs);
-            let free_to = Self::pos_to_next_block(new_size, bs);
+            let free_from = Self::next_block_of_pos(old_size, bs);
+            let free_to = Self::next_block_of_pos(new_size, bs);
             self.free_file_db(dk, free_from, free_to)?;
         }
         Ok(())
@@ -379,11 +387,32 @@ impl DkFile {
 
     /// `from` is inclusive, `to` is exclusive
     fn free_file_db(&mut self, dk: &mut Donkey, from: u64, to: u64) -> DkResult<()> {
+        // free data blocks
         for bi in from..to {
             if let Some(ptr) = self.locate(dk, bi)? {
                 dk.free_db(ptr)?;
+                self.inode.blocks -= 1;
             }
         }
+        // Clear direct pointers
+        if from < 12 {
+            for bi in from..12 {
+                self.inode.ptrs[0][bi as usize] = 0;
+            }
+        }
+        // Free indirect ptr blocks
+        let (mut level_from, off_from) = self.level_off(dk, from);
+        if off_from > 0 {
+            level_from += 1;
+        }
+        for i in max(level_from, 1)..=4 {
+            if self.inode.ptrs[i as usize][0] > 0 {
+                dk.free_db(self.inode.ptrs[i as usize][0])?;
+                self.inode.blocks -= 1;
+                self.inode.ptrs[i as usize][0] = 0;
+            }
+        }
+
         Ok(())
     }
 
