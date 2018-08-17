@@ -459,3 +459,58 @@ fn symlink() -> DkResult<()> {
     assert_eq!(homura_link.as_bytes(), read.as_slice());
     Ok(())
 }
+
+#[test]
+fn exhaust_inodes() -> DkResult<()> {
+    prepare!(handle);
+    let mut rng = XorShiftRng::from_seed([1, 1, 4, 5, 1, 4, 1, 9, 1, 9, 8, 1, 0, 8, 9, 3]);
+    let mut names: HashSet<OsString> = HashSet::new();
+    let statfs = handle.statfs()?;
+    while names.len() < statfs.ffree as usize {
+        names.insert(
+            rng.sample_iter(&Alphanumeric)
+                .take(63)
+                .collect::<String>()
+                .into(),
+        );
+    }
+    let mut dirs = Vec::new();
+    for names in names.iter().take(100) {
+        dirs.push(
+            handle
+                .mkdir(ROOT_INODE, 0, 0, names, FileMode::empty())?
+                .ino,
+        );
+    }
+    let statfs = handle.statfs()?;
+    let mut unused: Vec<&OsStr> = names
+        .iter()
+        .take(statfs.ffree as usize)
+        .map(|s| s.as_os_str())
+        .collect();;
+    let mut used = Vec::new();
+    for i in 0..20000 {
+        let r = rng.gen::<f64>();
+        if r < 0.05 {
+            rng.shuffle(unused.as_mut());
+            rng.shuffle(used.as_mut());
+        } else if r < 0.4 {
+            if let Some((ino, name)) = used.pop() {
+                handle.unlink(ino, name)?;
+                unused.push(name);
+            }
+        } else {
+            if let Some(name) = unused.pop() {
+                let ino = dirs[i % dirs.len()];
+                handle.mknod(0, 0, ino, name, FileMode::REGULAR_FILE)?;
+                used.push((ino, name));
+            }
+        }
+    }
+    while let Some((ino, name)) = used.pop() {
+        handle.unlink(ino, name)?;
+    }
+    handle.apply_releases()?;
+    assert_eq!(statfs, handle.statfs()?);
+    Ok(())
+}
