@@ -374,12 +374,10 @@ fn shrink_size() -> DkResult<()> {
     let data: Vec<u8> = rng.sample_iter(&Standard).take(1 << 24).collect(); // 16 MB
     let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
     let statfs = handle.statfs()?;
-    println!("{:?}", handle.statfs()?);
 
     let fh = handle.open(stat.ino, Flags::WRITE_ONLY)?;
     let len = handle.write(fh.clone(), 0, &data)?;
     assert_eq!(len, data.len());
-    println!("{:?}", handle.getattr(stat.ino)?);
     assert_ne!(handle.statfs()?, statfs);
     drop(fh);
     assert_ne!(handle.statfs()?, statfs);
@@ -400,7 +398,6 @@ fn shrink_size() -> DkResult<()> {
         None,
         None,
     )?; // Set size to 0
-    println!("{:?}", handle.getattr(stat.ino)?);
     assert_eq!(handle.getattr(stat.ino)?.size, 0);
     assert_eq!(handle.getattr(stat.ino)?.blocks, 0);
     assert_eq!(handle.statfs()?, statfs);
