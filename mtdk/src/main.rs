@@ -207,7 +207,19 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn readlink(&mut self, req: &Request, ino: u64, reply: ReplyData) {
         ino![ino];
         debug_params!(self.log; readlink; req, ino);
-        unimplemented!()
+        let res = self
+            .dk
+            .getattr(ino)
+            .map(|stat| stat.size)
+            .and_then(|size| self.dk.open(ino, Flags::READ_ONLY).map(|fh| (fh, size)))
+            .and_then(|(fh, size)| self.dk.read(fh, 0, size));
+        match res {
+            Ok(v) => reply.data(&v[..]),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn mknod(
@@ -283,7 +295,13 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![parent];
         debug_params!(self.log; symlink; req, parent, name, link);
-        unimplemented!()
+        match self.dk.symlink(req.uid(), req.gid(), parent, name, link) {
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn rename(

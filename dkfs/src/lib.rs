@@ -215,13 +215,18 @@ impl<'a> Donkey<'a> {
     fn allocate_from_free(&mut self, ptr: u64, size: u64) -> DkResult<(u64, u64)> {
         let fl: FreeList = self.read(ptr)?;
         if fl.size >= size {
-            // Split this free list
-            let new_fl = FreeList {
-                size: fl.size - size,
-                ..fl
+            let new_ptr = if fl.size - size >= std::mem::size_of::<FreeList>() as u64 {
+                // Split this free list
+                let new_fl = FreeList {
+                    size: fl.size - size,
+                    ..fl
+                };
+                let new_ptr = ptr + size;
+                self.write(new_ptr, &new_fl)?;
+                new_ptr
+            } else {
+                fl.next_ptr
             };
-            let new_ptr = ptr + size;
-            self.write(new_ptr, &new_fl)?;
             Ok((ptr, new_ptr))
         } else {
             self.allocate_from_free(fl.next_ptr, size)

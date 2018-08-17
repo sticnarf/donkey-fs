@@ -9,6 +9,8 @@ use rand::prng::XorShiftRng;
 use rand::{thread_rng, Rng, SeedableRng};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 macro_rules! prepare {
     ($i: ident) => {
@@ -438,5 +440,22 @@ fn rmdir() -> DkResult<()> {
     handle.apply_releases()?;
     assert_eq!(handle.getattr(ROOT_INODE)?.nlink, 2);
     assert_eq!(statfs, handle.statfs()?);
+    Ok(())
+}
+
+#[test]
+fn symlink() -> DkResult<()> {
+    prepare!(handle);
+    let homura = OsStr::new("Homura");
+    let homura_link = OsStr::new("/暁美ほむら");
+    let path = Path::new(homura_link);
+    let link = handle.symlink(0, 0, ROOT_INODE, homura, path)?;
+    assert!(link.mode.contains(
+        FileMode::SYMBOLIC_LINK | FileMode::USER_RWX | FileMode::GROUP_RWX | FileMode::OTHERS_RWX
+    ));
+
+    let fh = handle.open(link.ino, Flags::READ_ONLY)?;
+    let read = handle.read(fh, 0, 4096)?;
+    assert_eq!(homura_link.as_bytes(), read.as_slice());
     Ok(())
 }

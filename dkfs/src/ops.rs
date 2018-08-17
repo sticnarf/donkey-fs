@@ -3,6 +3,8 @@ use replies::*;
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::rc::Rc;
 use *;
 
@@ -249,5 +251,32 @@ impl<'a> Handle<'a> {
         } else {
             Err(format_err!("Directory is not empty."))
         }
+    }
+
+    pub fn symlink(
+        &self,
+        uid: u32,
+        gid: u32,
+        parent: u64,
+        name: &OsStr,
+        link: &Path,
+    ) -> DkResult<Stat> {
+        let stat = self.mknod(
+            uid,
+            gid,
+            parent,
+            name,
+            FileMode::SYMBOLIC_LINK
+                | FileMode::USER_RWX
+                | FileMode::GROUP_RWX
+                | FileMode::OTHERS_RWX,
+        )?;
+        let fh = self.open(stat.ino, Flags::WRITE_ONLY)?;
+        let bytes = link.as_os_str().as_bytes();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            offset += self.write(fh.clone(), offset as u64, &bytes[offset..])?;
+        }
+        self.getattr(stat.ino)
     }
 }
