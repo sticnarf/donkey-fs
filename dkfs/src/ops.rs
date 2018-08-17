@@ -222,4 +222,18 @@ impl<'a> Handle<'a> {
         let dh = self.opendir(parent)?;
         self.inner.borrow_mut().unlink(dh, name)
     }
+
+    pub fn rename(
+        &self,
+        old_parent: u64,
+        name: &OsStr,
+        new_parent: u64,
+        new_name: &OsStr,
+    ) -> DkResult<()> {
+        let ino = self.lookup(old_parent, name)?.ino;
+        let new_parent = self.opendir(new_parent)?;
+        self.inner.borrow_mut().link(ino, new_parent, new_name)?;
+        self.unlink(old_parent, name)?;
+        Ok(())
+    }
 }

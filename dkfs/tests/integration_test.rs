@@ -404,3 +404,19 @@ fn shrink_size() -> DkResult<()> {
 
     Ok(())
 }
+
+#[test]
+fn rename() -> DkResult<()> {
+    prepare!(handle);
+
+    let homura = OsStr::new("Homura");
+    let madoka = OsStr::new("Madoka");
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    let new_dir = handle
+        .mkdir(ROOT_INODE, 0, 0, OsStr::new("newdir"), FileMode::USER_RWX)?
+        .ino;
+    handle.rename(ROOT_INODE, homura, new_dir, madoka)?;
+    assert!(handle.lookup(ROOT_INODE, homura).is_err());
+    assert_eq!(stat, handle.lookup(new_dir, madoka)?);
+    Ok(())
+}

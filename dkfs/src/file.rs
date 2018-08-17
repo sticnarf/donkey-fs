@@ -2,7 +2,7 @@ use bincode::{deserialize_from, serialize_into};
 use block::*;
 use im::ordmap::{self, OrdMap};
 use std::cell::RefCell;
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::ffi::OsString;
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::ops::Drop;

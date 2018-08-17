@@ -290,7 +290,15 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![parent, newparent];
         debug_params!(self.log; rename; req, parent, name, newparent, newname);
-        unimplemented!()
+        match self.dk.rename(parent, name, newparent, newname) {
+            Ok(_) => {
+                reply.ok();
+            }
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(EIO);
+            }
+        }
     }
 
     fn open(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
@@ -614,7 +622,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![ino];
         debug_params!(self.log; access; req, ino, mask);
         // This function should not be called with `default_permissions` mount option.
-        unimplemented!()
+        reply.error(ENOSYS);
     }
 
     fn create(
