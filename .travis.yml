@@ -7,3 +7,4 @@ addons:
 language: rust
 rust:
   - nightly
+cache: cargo
