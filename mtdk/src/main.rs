@@ -263,7 +263,14 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         ino![parent];
         debug_params!(self.log; rmdir; req, parent, name);
-        unimplemented!()
+        match self.dk.rmdir(parent, name) {
+            Ok(_) => reply.ok(),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                // TODO distinguish error codes
+                reply.error(ENOTEMPTY);
+            }
+        }
     }
 
     fn symlink(

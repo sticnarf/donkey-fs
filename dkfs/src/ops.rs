@@ -236,4 +236,18 @@ impl<'a> Handle<'a> {
         self.unlink(old_parent, name)?;
         Ok(())
     }
+
+    pub fn rmdir(&self, parent: u64, name: &OsStr) -> DkResult<()> {
+        let dir = self.lookup(parent, name)?;
+        let ino = dir.ino;
+        let dir = self.opendir(ino)?;
+        if dir.entries.len() == 2 {
+            // dir only contains . and ..
+            self.unlink(ino, OsStr::new("."))?;
+            self.unlink(ino, OsStr::new(".."))?;
+            self.unlink(parent, name)
+        } else {
+            Err(format_err!("Directory is not empty."))
+        }
+    }
 }

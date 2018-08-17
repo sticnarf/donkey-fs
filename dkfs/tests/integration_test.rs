@@ -420,3 +420,23 @@ fn rename() -> DkResult<()> {
     assert_eq!(stat, handle.lookup(new_dir, madoka)?);
     Ok(())
 }
+
+#[test]
+fn rmdir() -> DkResult<()> {
+    prepare!(handle);
+
+    let homura = OsStr::new("Homura");
+    let madoka = OsStr::new("Madoka");
+    let statfs = handle.statfs()?;
+    let new_dir = handle.mkdir(ROOT_INODE, 0, 0, homura, FileMode::USER_RWX)?;
+    handle.mknod(0, 0, new_dir.ino, madoka, FileMode::REGULAR_FILE)?;
+    assert_eq!(handle.getattr(ROOT_INODE)?.nlink, 3);
+    assert!(handle.rmdir(ROOT_INODE, homura).is_err());
+    handle.unlink(new_dir.ino, madoka)?;
+    handle.rmdir(ROOT_INODE, homura)?;
+    assert!(handle.lookup(ROOT_INODE, homura).is_err());
+    handle.apply_releases()?;
+    assert_eq!(handle.getattr(ROOT_INODE)?.nlink, 2);
+    assert_eq!(statfs, handle.statfs()?);
+    Ok(())
+}
