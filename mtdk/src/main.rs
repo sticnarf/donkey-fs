@@ -679,7 +679,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![ino];
         debug_params!(self.log; getlk; req, ino, fh, lock_owner, start, end, typ, pid);
-        unimplemented!()
+        reply.error(ENOSYS);
     }
 
     fn setlk(
@@ -697,13 +697,13 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![ino];
         debug_params!(self.log; setlk; req, ino, fh, lock_owner, start, end, typ, pid, sleep);
-        unimplemented!()
+        reply.error(ENOSYS);
     }
 
     fn bmap(&mut self, req: &Request, ino: u64, blocksize: u32, idx: u64, reply: ReplyBmap) {
         ino![ino];
         debug_params!(self.log; bmap; req, ino, blocksize, idx);
-        unimplemented!()
+        reply.error(ENOSYS);
     }
 }
 
