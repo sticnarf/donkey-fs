@@ -344,15 +344,7 @@ impl DkFile {
         Ok(read_len as usize)
     }
 
-    fn debug_a(&mut self) {
-        println!("!!!");
-    }
-
     fn dk_write(&mut self, dk: &mut Donkey, buf: &[u8]) -> DkResult<usize> {
-        println!("Write {} bytes at {}", buf.len(), self.pos);
-        if self.pos == 4243456 {
-            self.debug_a();
-        }
         self.dirty = true;
         let bs = dk.block_size();
         let (bi, bo) = Self::block_of_pos(self.pos, bs);
@@ -372,48 +364,70 @@ impl DkFile {
     }
 
     pub(crate) fn update_size(&mut self, dk: &mut Donkey, new_size: u64) -> DkResult<()> {
-        let old_size = self.inode.size;
-        self.inode.size = new_size;
         self.dirty = true;
-        if old_size > new_size {
+        if self.inode.size > new_size {
             let bs = dk.block_size();
-            let free_from = Self::next_block_of_pos(old_size, bs);
-            let free_to = Self::next_block_of_pos(new_size, bs);
-            self.free_file_db(dk, free_from, free_to)?;
+            let free_from = Self::next_block_of_pos(new_size, bs);
+            self.free_file_db(dk, free_from)?;
         }
+        self.inode.size = new_size;
         Ok(())
-        // TODO Release blocks when shrinking
     }
 
-    /// `from` is inclusive, `to` is exclusive
-    fn free_file_db(&mut self, dk: &mut Donkey, from: u64, to: u64) -> DkResult<()> {
-        // free data blocks
-        for bi in from..to {
-            if let Some(ptr) = self.locate(dk, bi)? {
-                dk.free_db(ptr)?;
-                self.inode.blocks -= 1;
-            }
-        }
+    /// `from` is inclusive
+    fn free_file_db(&mut self, dk: &mut Donkey, from: u64) -> DkResult<()> {
         // Clear direct pointers
         if from < 12 {
-            for bi in from..12 {
-                self.inode.ptrs[0][bi as usize] = 0;
+            for bi in 0..12 {
+                if self.inode.ptrs[0][bi as usize] > 0 {
+                    dk.free_db(self.inode.ptrs[0][bi as usize])?;
+                    self.inode.blocks -= 1;
+                    self.inode.ptrs[0][bi as usize] = 0;
+                }
             }
         }
-        // Free indirect ptr blocks
-        let (mut level_from, off_from) = self.level_off(dk, from);
-        if off_from > 0 {
-            level_from += 1;
-        }
-        for i in max(level_from, 1)..=4 {
-            if self.inode.ptrs[i as usize][0] > 0 {
-                dk.free_db(self.inode.ptrs[i as usize][0])?;
+        let pc = dk.block_size() / 8;
+        let mut start = 12;
+        for i in 1..=4 {
+            if self.clear_pointers_rec(dk, from, start, self.inode.ptrs[i][0], i as u32)? {
+                dk.free_db(self.inode.ptrs[i][0])?;
                 self.inode.blocks -= 1;
-                self.inode.ptrs[i as usize][0] = 0;
+                self.inode.ptrs[i][0] = 0;
+            }
+            start += pc.pow(i as u32);
+        }
+        Ok(())
+    }
+
+    // returns whether to clear `ptr`
+    fn clear_pointers_rec(
+        &mut self,
+        dk: &mut Donkey,
+        from: u64,
+        start: u64,
+        ptr: u64,
+        level: u32,
+    ) -> DkResult<bool> {
+        if ptr == 0 {
+            return Ok(false);
+        }
+        let pc = dk.block_size() / 8;
+        let len = pc.pow(level);
+        if level >= 1 {
+            // clear recursively
+            let mut start = start;
+            let sublen = len / pc;
+            let mut pb: PtrBlock = dk.read_block(ptr)?;
+            for ptr in &mut pb.0 {
+                if self.clear_pointers_rec(dk, from, start, *ptr, level - 1)? {
+                    dk.free_db(*ptr)?;
+                    self.inode.blocks -= 1;
+                    *ptr = 0;
+                }
+                start += sublen;
             }
         }
-
-        Ok(())
+        Ok(from <= start)
     }
 
     pub(crate) fn destroy(&mut self, dk: &mut Donkey) -> DkResult<()> {
