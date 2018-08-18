@@ -106,21 +106,6 @@ impl Inode {
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct InodePtrs([u64; 12], [u64; 1], [u64; 1], [u64; 1], [u64; 1]);
 
-// impl Index<u32> for InodePtrs {
-//     type Output = [u64];
-
-//     fn index(&self, index: u32) -> &[u64] {
-//         match index {
-//             0 => &self.0,
-//             1 => &self.1,
-//             2 => &self.2,
-//             3 => &self.3,
-//             4 => &self.4,
-//             _ => unreachable!(),
-//         }
-//     }
-// }
-
 impl Index<usize> for InodePtrs {
     type Output = [u64];
 

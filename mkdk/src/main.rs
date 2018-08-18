@@ -11,7 +11,7 @@ fn main() -> DkResult<()> {
     let matches = App::new("mkdk")
         .version("0.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
-        .about("Make a donkey filesystem")
+        .about("Make a donkey file system")
         .arg(
             Arg::with_name("device")
                 .help("Path to the device to be used")

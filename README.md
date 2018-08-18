@@ -13,7 +13,7 @@ This project contains:
 
 Rust 1.28 or above is required in order to build this project.
 
-`libfuse` headers and library are needed in order to build and run `mtdk`.
+`pkg-config` and `libfuse-dev` are needed to build `mtdk`.
 
 This project should compile on Linux, macOS and FreeBSD,
 but only **Linux** is assured on which `mtdk` performs properly.
@@ -23,4 +23,8 @@ See [#4](https://github.com/sticnarf/donkey-fs/issues/4).
 
 Run `mkdk --help` or `mtdk --help` for usage.
 
-Root permission is usually required to format a block device and mount a file system.
+Fuse 2.x library should be installed if you use `mtdk`.
+
+## Limitations
+
+The max file size is about 256 TB. There is no practical limit on the file system size.

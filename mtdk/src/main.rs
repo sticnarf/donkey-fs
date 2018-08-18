@@ -23,7 +23,7 @@ fn main() -> DkResult<()> {
     let matches = App::new("mtdk")
         .version("0.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
-        .about("Mount a donkey filesystem")
+        .about("Mount a donkey file system")
         .arg(
             Arg::with_name("device")
                 .help("Path to the device to be used")
