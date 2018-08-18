@@ -9,7 +9,7 @@ This project contains:
 
 * `dkfs`: Library that supports `mkdk` and `mtdk`.
 * `mkdk`: Binary to make a donkey file system.
-* `mtdk`: Binary to mount a donkey file ystem.
+* `mtdk`: Binary to mount a donkey file system.
 
 ## Build
 
