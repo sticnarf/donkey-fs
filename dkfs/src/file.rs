@@ -193,13 +193,15 @@ impl DkFile {
         index: usize,
     ) -> DkResult<()> {
         assert!(level > 1);
-        let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
-        let empty = cache.0[index] == 0;
-        if empty {
-            cache.0[index] = dk.allocate_db()?;
-            self.inode.blocks += 1;
-        }
-        let new_ptr = cache.0[index];
+        let (new_ptr, empty) = {
+            let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
+            let empty = cache.0[index] == 0;
+            if empty {
+                cache.0[index] = dk.allocate_db()?;
+                self.inode.blocks += 1;
+            }
+            (cache.0[index], empty)
+        };
         if let Some((p, pb)) = &self.ptr_cache[level - 2] {
             if *p == new_ptr {
                 return Ok(());
@@ -229,8 +231,8 @@ impl DkFile {
             }
             Ok(self.inode.ptrs[level][off])
         } else {
-            self.inode.ptrs[level][0] =
-                self.load_ptrs_alloc(dk, level, self.inode.ptrs[level][0])?;
+            let indir_ptr = self.inode.ptrs[level][0];
+            self.inode.ptrs[level][0] = self.load_ptrs_alloc(dk, level, indir_ptr)?;
             let pc = dk.block_size() as usize / 8;
             let mut ipc = pc.pow(level as u32);
             while level > 1 {
@@ -274,11 +276,13 @@ impl DkFile {
         index: usize,
     ) -> DkResult<bool> {
         assert!(level > 1);
-        let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
-        if cache.0[index] == 0 {
+        let new_ptr = {
+            let (_, cache) = self.ptr_cache[level - 1].as_mut().unwrap();
+            cache.0[index]
+        };
+        if new_ptr == 0 {
             Ok(false)
         } else {
-            let new_ptr = cache.0[index];
             if let Some((p, pb)) = &self.ptr_cache[level - 2] {
                 if *p == new_ptr {
                     return Ok(true);
@@ -302,7 +306,8 @@ impl DkFile {
                 Ok(Some(self.inode.ptrs[level][off]))
             }
         } else {
-            if let Some(ptr) = self.load_ptrs(dk, level, self.inode.ptrs[level][0])? {
+            let indir_ptr = self.inode.ptrs[level][0];
+            if let Some(ptr) = self.load_ptrs(dk, level, indir_ptr)? {
                 self.inode.ptrs[level][0] = ptr;
             } else {
                 return Ok(None);
@@ -352,8 +357,9 @@ impl DkFile {
         let len = min((bs - bo) as usize, buf.len());
         dk.write(ptr, &RefData(&buf[..len]))?;
         self.pos += len as u64;
-        if self.pos > self.inode.size {
-            self.update_size(dk, self.pos)?;
+        let pos = self.pos;
+        if pos > self.inode.size {
+            self.update_size(dk, pos)?;
         }
         Ok(len)
     }
@@ -389,7 +395,8 @@ impl DkFile {
         let pc = dk.block_size() / 8;
         let mut start = 12;
         for i in 1..=4 {
-            if self.clear_pointers_rec(dk, from, start, self.inode.ptrs[i][0], i as u32)? {
+            let indir_ptr = self.inode.ptrs[i][0];
+            if self.clear_pointers_rec(dk, from, start, indir_ptr, i as u32)? {
                 dk.free_db(self.inode.ptrs[i][0])?;
                 self.inode.blocks -= 1;
                 self.inode.ptrs[i][0] = 0;
@@ -456,8 +463,9 @@ impl Deref for DkFileHandle {
 
 impl Drop for DkFileHandle {
     fn drop(&mut self) {
-        let ino = self.borrow().inode.ino;
-        self.borrow().close_file_list.borrow_mut().push(ino);
+        let fh = self.borrow();
+        let ino = fh.inode.ino;
+        fh.close_file_list.borrow_mut().push(ino);
     }
 }
 
@@ -566,7 +574,8 @@ impl DkDirHandle {
 
 impl Drop for DkDirHandle {
     fn drop(&mut self) {
-        let ino = self.inner.borrow().fh.borrow().inode.ino;
-        self.borrow().close_dir_list.borrow_mut().push(ino);
+        let dh = self.inner.borrow();
+        let ino = dh.fh.borrow().inode.ino;
+        dh.close_dir_list.borrow_mut().push(ino);
     }
 }

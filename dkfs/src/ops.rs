@@ -180,13 +180,8 @@ impl<'a> Handle<'a> {
     }
 
     pub fn listxattr(&self, ino: u64) -> DkResult<Vec<OsString>> {
-        let v = self
-            .open(ino, Flags::READ_ONLY)?
-            .borrow()
-            .xattr
-            .keys()
-            .map(|key| key.to_owned())
-            .collect();
+        let fh = self.open(ino, Flags::READ_ONLY)?;
+        let v = fh.borrow().xattr.keys().map(|key| key.to_owned()).collect();
         Ok(v)
     }
 

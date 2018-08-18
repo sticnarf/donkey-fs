@@ -1,6 +1,5 @@
 //! Attention! This filesystem does not work
 //! in a multi-threaded environment!
-#![feature(nll)]
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
@@ -259,7 +258,8 @@ impl<'a> Donkey<'a> {
     fn allocate_db(&mut self) -> DkResult<u64> {
         if self.sb.used_db_count < self.sb.db_count {
             let fl_ptr = self.sb.db_fl_ptr;
-            let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, self.block_size())?;
+            let bs = self.block_size();
+            let (fd_ptr, new_fl_ptr) = self.allocate_from_free(fl_ptr, bs)?;
             self.sb.db_fl_ptr = new_fl_ptr;
             self.sb.used_db_count += 1;
             self.flush_sb()?;
@@ -337,16 +337,15 @@ impl<'a> Donkey<'a> {
     fn open(&mut self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
         self.close_files_in_list()?;
         // We do not use entry API here to prevent `self` being borrowed twice
-        let inner = match self.opened_files.get(&ino) {
-            Some(inner) => inner.clone(),
-            None => {
-                let inode = self.read_inode(ino)?;
-                let mut f = DkFile::new(inode, self.close_file_list.clone());
-                f.read_xattr(self)?;
-                let rc = Rc::new(RefCell::new(f));
-                self.opened_files.insert(ino, rc.clone());
-                rc
-            }
+        let inner = if let Some(fh) = self.opened_files.get(&ino).map(|fh| fh.clone()) {
+            fh
+        } else {
+            let inode = self.read_inode(ino)?;
+            let mut f = DkFile::new(inode, self.close_file_list.clone());
+            f.read_xattr(self)?;
+            let rc = Rc::new(RefCell::new(f));
+            self.opened_files.insert(ino, rc.clone());
+            rc
         };
         let df = DkFileHandle { inner, flags };
 
@@ -356,16 +355,15 @@ impl<'a> Donkey<'a> {
     fn open_dir(&mut self, ino: u64) -> DkResult<DkDirHandle> {
         self.close_dirs_in_list()?;
         // We do not use entry API here to prevent `self` being borrowed twice
-        let inner = match self.opened_dirs.get(&ino) {
-            Some(inner) => inner.clone(),
-            None => {
-                let fh = self.open(ino, Flags::READ_WRITE)?;
-                let mut dir = DkDir::from_file(fh, self.close_dir_list.clone())?;
-                dir.read_fully(self)?;
-                let rc = Rc::new(RefCell::new(dir));
-                self.opened_dirs.insert(ino, rc.clone());
-                rc
-            }
+        let inner = if let Some(dh) = self.opened_dirs.get(&ino).map(|dh| dh.clone()) {
+            dh
+        } else {
+            let fh = self.open(ino, Flags::READ_WRITE)?;
+            let mut dir = DkDir::from_file(fh, self.close_dir_list.clone())?;
+            dir.read_fully(self)?;
+            let rc = Rc::new(RefCell::new(dir));
+            self.opened_dirs.insert(ino, rc.clone());
+            rc
         };
         let entries = inner.borrow().entries.clone();
         let dd = DkDirHandle { inner, entries };
@@ -378,8 +376,9 @@ impl<'a> Donkey<'a> {
             size: INODE_SIZE,
             next_ptr: self.sb.inode_fl_ptr,
         };
-        self.sb.inode_fl_ptr = Inode::ptr(ino);
-        self.write(self.sb.inode_fl_ptr, &new_fl)?;
+        let ptr = Inode::ptr(ino);
+        self.sb.inode_fl_ptr = ptr;
+        self.write(ptr, &new_fl)?;
         self.sb.used_inode_count -= 1;
         self.flush_sb()
     }

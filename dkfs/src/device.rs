@@ -44,7 +44,8 @@ pub trait Device: Read + Write + Seek + Debug {
 
     /// Limit length to one block size
     fn read_block_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
-        self.read_len_at(ptr, self.block_size())
+        let bs = self.block_size();
+        self.read_len_at(ptr, bs)
     }
 
     fn write_at(&mut self, writable: &Writable, ptr: u64) -> DkResult<()> {
