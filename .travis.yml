@@ -6,5 +6,5 @@ addons:
       - libfuse-dev
 language: rust
 rust:
-  - nightly
+  - stable
 cache: cargo
