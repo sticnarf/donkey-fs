@@ -63,7 +63,7 @@ pub fn file_attr(stat: Stat) -> FileAttr {
     }
 }
 
-pub fn errno(error: DkError) -> c_int {
+pub fn errno(error: &DkError) -> c_int {
     use DkError::*;
     match error {
         IoError(_) | Corrupted(_) | Other(_) => EIO,
