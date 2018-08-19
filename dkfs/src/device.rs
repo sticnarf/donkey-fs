@@ -169,7 +169,7 @@ impl BlockDevice {
             ioctl_read!(getsize64, 0x12, 114, u64);
             let mut size: u64 = 0;
             unsafe {
-                getsize64(fd, &mut size)?;
+                getsize64(fd, &mut size).map_err(|e| Other(e.into()))?;
             }
             Ok(size)
         }
@@ -194,7 +194,7 @@ impl BlockDevice {
             ioctl_read!(getmediasize, b'd', 129, u64);
             let mut size: u64 = 0;
             unsafe {
-                getmediasize(fd, &mut size)?;
+                getmediasize(fd, &mut size).map_err(|e| Other(e.into()))?;
             }
             Ok(size)
         }
