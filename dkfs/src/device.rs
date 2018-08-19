@@ -1,10 +1,10 @@
-use super::*;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
+use *;
 
 pub trait Device: Read + Write + Seek + Debug {
     fn block_count(&self) -> u64;
@@ -19,7 +19,10 @@ pub trait Device: Read + Write + Seek + Debug {
     fn read_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
         if ptr >= size {
-            Err(format_err!("Read at {}, but device size is {}", ptr, size))
+            Err(Corrupted(format!(
+                "Read at {}, but device size is {}",
+                ptr, size
+            )))
         } else {
             self.seek(SeekFrom::Start(ptr))?;
             Ok(Box::new(self))
@@ -30,12 +33,10 @@ pub trait Device: Read + Write + Seek + Debug {
     fn read_len_at<'a>(&'a mut self, ptr: u64, len: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
         if ptr + len >= size {
-            Err(format_err!(
+            Err(Corrupted(format!(
                 "Read {} bytes at {}, but device size is {}",
-                len,
-                ptr,
-                size
-            ))
+                len, ptr, size
+            )))
         } else {
             self.seek(SeekFrom::Start(ptr))?;
             Ok(Box::new(self.take(len)))
@@ -53,12 +54,10 @@ pub trait Device: Read + Write + Seek + Debug {
         let bytes = writable.as_bytes()?;
         let len = bytes.len() as u64;
         if ptr + len >= size {
-            Err(format_err!(
+            Err(Corrupted(format!(
                 "Write {} bytes at {}, but device size is {}",
-                len,
-                ptr,
-                size
-            ))
+                len, ptr, size
+            )))
         } else {
             self.seek(SeekFrom::Start(ptr))?;
             Ok(self.write_all(&bytes)?)
@@ -74,7 +73,7 @@ pub fn dev<P: AsRef<Path>>(dev_path: P) -> DkResult<Box<dyn Device>> {
     } else if file_type.is_block_device() {
         Ok(Box::new(BlockDevice::new(file)?))
     } else {
-        Err(format_err!("This device is not supported."))
+        Err(NotSupported)
     }
 }
 
@@ -183,8 +182,8 @@ impl BlockDevice {
             let mut blksize: u32 = 0;
             let mut blkcount: u64 = 0;
             unsafe {
-                getblksize(fd, &mut blksize)?;
-                getblkcount(fd, &mut blkcount)?;
+                getblksize(fd, &mut blksize).map_err(|e| Other(e.into()))?;
+                getblkcount(fd, &mut blkcount).map_err(|e| Other(e.into()))?;
             }
             Ok(blksize as u64 * blkcount)
         }

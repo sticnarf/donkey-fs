@@ -70,7 +70,7 @@ impl<'a> Handle<'a> {
         let dir = self.opendir(parent)?;
         match dir.entries.get(name) {
             Some(ino) => self.getattr(*ino),
-            None => Err(format_err!("No such directory entry.")),
+            None => Err(NotFound),
         }
     }
 
@@ -244,7 +244,7 @@ impl<'a> Handle<'a> {
             self.unlink(ino, OsStr::new(".."))?;
             self.unlink(parent, name)
         } else {
-            Err(format_err!("Directory is not empty."))
+            Err(NotEmpty)
         }
     }
 
