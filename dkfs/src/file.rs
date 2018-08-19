@@ -1,5 +1,6 @@
 use bincode::{deserialize_from, serialize_into};
 use block::*;
+use failure::Fail;
 use im::ordmap::{self, OrdMap};
 use std::cell::RefCell;
 use std::cmp::min;
@@ -29,7 +30,7 @@ impl<'a, 'b: 'a> Read for DkFileIO<'a, 'b> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.file.dk_read(self.dk, buf) {
             Ok(len) => Ok(len),
-            Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
+            Err(e) => Err(io::Error::new(ErrorKind::Other, e.compat())),
         }
     }
 }
@@ -38,7 +39,7 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.file.dk_write(self.dk, buf) {
             Ok(len) => Ok(len),
-            Err(e) => Err(io::Error::new(ErrorKind::Other, format!("{}", e))),
+            Err(e) => Err(io::Error::new(ErrorKind::Other, e.compat())),
         }
     }
 
@@ -50,10 +51,7 @@ impl<'a, 'b: 'a> Write for DkFileIO<'a, 'b> {
                 .and_then(|_| self.file.write_xattr(self.dk))
                 .and_then(|_| self.dk.write_inode(&self.file.inode));
             if let Err(e) = res {
-                return Err(io::Error::new(
-                    ErrorKind::Other,
-                    format!("Failed to flush file of ino {}! {}", self.file.inode.ino, e),
-                ));
+                return Err(io::Error::new(ErrorKind::Other, e.compat()));
             }
             self.file.dirty = false;
         }
@@ -484,7 +482,7 @@ impl DkDir {
         close_dir_list: Rc<RefCell<Vec<u64>>>,
     ) -> DkResult<Self> {
         if !fh.borrow().inode.mode.is_directory() {
-            Err(format_err!("Not a directory."))
+            Err(NotDirectory)
         } else {
             let dir = DkDir {
                 fh,
@@ -538,7 +536,7 @@ impl DkDir {
                 // of the directory.
                 return Ok(());
             } else {
-                return Err(format_err!("Invalid directory entry ino: {}", ino));
+                return Err(Corrupted(format!("Invalid directory entry ino: {}", ino)));
             }
         }
     }
@@ -565,7 +563,7 @@ impl DkDirHandle {
                 e.insert(ino);
                 Ok(())
             }
-            ordmap::Entry::Occupied(_) => Err(format_err!("Entry {:?} already exists.", name)),
+            ordmap::Entry::Occupied(_) => Err(AlreadyExists),
         };
         self.borrow_mut().dirty = true;
         res
