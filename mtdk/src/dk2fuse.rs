@@ -62,3 +62,16 @@ pub fn file_attr(stat: Stat) -> FileAttr {
         flags: 0,
     }
 }
+
+pub fn errno(error: DkError) -> c_int {
+    use DkError::*;
+    match error {
+        IoError(_) | Corrupted(_) | Other(_) => EIO,
+        Exhausted => EDQUOT,
+        NotSupported => ENOSYS,
+        NotFound => ENOENT,
+        NotEmpty => ENOTEMPTY,
+        NotDirectory => ENOTDIR,
+        AlreadyExists => EEXIST,
+    }
+}
