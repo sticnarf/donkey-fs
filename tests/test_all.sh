@@ -1,0 +1,27 @@
+######################
+## Real world tests ##
+######################
+
+# Create a fake block device
+sudo fallocate -l 512M /opt/fake-dev0-backstore
+sudo mknod /dev/fake-dev0 b 7 42
+sudo losetup /dev/fake-dev0 /opt/fake-dev0-backstore
+
+# Format and mount
+sudo mkdir -p /dkfs
+sudo target/debug/mkdk /dev/fake-dev0
+sudo target/debug/mtdk /dev/fake-dev0 /dkfs &
+sleep 1
+
+# Run tests
+cd /dkfs
+ls -la
+
+# Unmount
+cd /
+sudo umount /dkfs
+
+# Destroy the fake block device
+sudo losetup -d /dev/fake-dev0
+sudo rm /dev/fake-dev0
+sudo rm /opt/fake-dev0-backstore
