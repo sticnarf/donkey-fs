@@ -115,27 +115,39 @@ impl<'a> Handle<'a> {
         size: Option<u64>,
         atime: Option<DkTimespec>,
         mtime: Option<DkTimespec>,
-        ctime: Option<DkTimespec>,
+        mut ctime: Option<DkTimespec>,
         crtime: Option<DkTimespec>,
     ) -> DkResult<Stat> {
         let fh = match fh {
             Some(fh) => fh,
             None => self.open(ino, Flags::READ_ONLY)?,
         };
+        let mut modified = false;
         fh.borrow_mut().dirty = true;
         macro_rules! setattrs {
             ($($i:ident),*) => {
                 $(
                 if let Some(v) = $i {
                     fh.borrow_mut().inode.$i = v;
+                    modified = true;
                 })*
             };
         }
-        setattrs![mode, uid, gid, atime, mtime, ctime, crtime];
+        setattrs![mode, uid, gid, atime, mtime, crtime];
         if let Some(size) = size {
             let dk = &mut *self.inner.borrow_mut();
             fh.borrow_mut().update_size(dk, size)?;
+            modified = true;
         }
+
+        // Update ctime
+        if modified && ctime.is_none() {
+            ctime = Some(SystemTime::now().into());
+        }
+        if let Some(ctime) = ctime {
+            fh.borrow_mut().inode.ctime = ctime;
+        }
+
         self.getattr(ino)
     }
 
