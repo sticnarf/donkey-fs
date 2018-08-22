@@ -13,15 +13,18 @@ sudo target/debug/mkdk /dev/fake-dev0
 sudo target/debug/mtdk /dev/fake-dev0 /dkfs &
 sleep 1
 
+set -e
+function cleanup {
+    # Unmount
+    cd /
+    sudo umount /dkfs
+    sudo rmdir /dkfs
+
+    # Destroy the fake block device
+    sudo losetup -d /dev/fake-dev0
+    sudo rm /dev/fake-dev0
+    sudo rm /opt/fake-dev0-backstore
+}
+trap cleanup EXIT
+
 # Run tests
-cd /dkfs
-ls -la
-
-# Unmount
-cd /
-sudo umount /dkfs
-
-# Destroy the fake block device
-sudo losetup -d /dev/fake-dev0
-sudo rm /dev/fake-dev0
-sudo rm /opt/fake-dev0-backstore
