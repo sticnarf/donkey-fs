@@ -275,6 +275,9 @@ impl<'a> Handle<'a> {
         }
         let ino = self.lookup(old_parent, name)?.ino;
         let new_parent = self.opendir(new_parent)?;
+        self.inner
+            .borrow_mut()
+            .unlink(new_parent.clone(), new_name)?;
         self.inner.borrow_mut().link(ino, new_parent, new_name)?;
         self.unlink(old_parent, name)?;
         Ok(())
