@@ -67,6 +67,9 @@ impl<'a> Handle<'a> {
     }
 
     pub fn lookup(&self, parent: u64, name: &OsStr) -> DkResult<Stat> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let dir = self.opendir(parent)?;
         match dir.entries.get(name) {
             Some(ino) => self.getattr(*ino),
@@ -90,6 +93,9 @@ impl<'a> Handle<'a> {
         name: &OsStr,
         mode: FileMode,
     ) -> DkResult<Stat> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let parent = self.opendir(parent)?;
         let ino = self.inner.borrow_mut().mknod(mode, uid, gid, 0, None)?;
         self.inner.borrow_mut().link(ino, parent, name)?;
@@ -179,6 +185,9 @@ impl<'a> Handle<'a> {
         name: &OsStr,
         mode: FileMode,
     ) -> DkResult<Stat> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let ino = self.inner.borrow_mut().mkdir(parent, mode, uid, gid)?;
         let parent = self.opendir(parent)?;
         self.inner.borrow_mut().link(ino, parent, name)?;
@@ -186,6 +195,9 @@ impl<'a> Handle<'a> {
     }
 
     pub fn getxattr(&self, ino: u64, name: &OsStr) -> DkResult<Option<Vec<u8>>> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let fh = self.open(ino, Flags::READ_ONLY)?;
         let fh = fh.borrow();
         Ok(fh.xattr.get(name).map(|v| v.clone()))
@@ -198,6 +210,9 @@ impl<'a> Handle<'a> {
     }
 
     pub fn setxattr(&self, ino: u64, name: &OsStr, value: &[u8]) -> DkResult<()> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let fh = self.open(ino, Flags::READ_ONLY)?;
         fh.borrow_mut().dirty = true;
         fh.borrow_mut()
@@ -207,6 +222,9 @@ impl<'a> Handle<'a> {
     }
 
     pub fn removexattr(&self, ino: u64, name: &OsStr) -> DkResult<()> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let fh = self.open(ino, Flags::READ_ONLY)?;
         fh.borrow_mut().dirty = true;
         fh.borrow_mut().xattr.remove(name);
@@ -228,6 +246,9 @@ impl<'a> Handle<'a> {
     }
 
     pub fn unlink(&self, parent: u64, name: &OsStr) -> DkResult<()> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let dh = self.opendir(parent)?;
         self.inner.borrow_mut().unlink(dh, name)
     }
@@ -239,6 +260,9 @@ impl<'a> Handle<'a> {
         new_parent: u64,
         new_name: &OsStr,
     ) -> DkResult<()> {
+        if name.len() > MAX_NAMELEN as usize || new_name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let ino = self.lookup(old_parent, name)?.ino;
         let new_parent = self.opendir(new_parent)?;
         self.inner.borrow_mut().link(ino, new_parent, new_name)?;
@@ -268,6 +292,9 @@ impl<'a> Handle<'a> {
         name: &OsStr,
         link: &Path,
     ) -> DkResult<Stat> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
         let stat = self.mknod(
             uid,
             gid,

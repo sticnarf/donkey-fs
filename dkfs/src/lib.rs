@@ -58,10 +58,12 @@ pub enum DkError {
     NotEmpty,
     #[fail(display = "Not a directory")]
     NotDirectory,
-    #[fail(display = "Already exists.")]
+    #[fail(display = "Already exists")]
     AlreadyExists,
     #[fail(display = "Invalid argument: {}", _0)]
     Invalid(String),
+    #[fail(display = "Name is too long")]
+    NameTooLong,
     #[fail(display = "{}", _0)]
     Other(failure::Error),
 }

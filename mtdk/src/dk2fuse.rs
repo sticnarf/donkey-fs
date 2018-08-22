@@ -74,5 +74,6 @@ pub fn errno(error: &DkError) -> c_int {
         NotDirectory => ENOTDIR,
         AlreadyExists => EEXIST,
         Invalid(_) => EINVAL,
+        NameTooLong => ENAMETOOLONG,
     }
 }
