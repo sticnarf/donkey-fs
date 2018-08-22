@@ -92,12 +92,13 @@ impl<'a> Handle<'a> {
         parent: u64,
         name: &OsStr,
         mode: FileMode,
+        rdev: Option<u64>,
     ) -> DkResult<Stat> {
         if name.len() > MAX_NAMELEN as usize {
             return Err(NameTooLong);
         }
         let parent = self.opendir(parent)?;
-        let ino = self.inner.borrow_mut().mknod(mode, uid, gid, 0, None)?;
+        let ino = self.inner.borrow_mut().mknod(mode, uid, gid, 0, rdev)?;
         self.inner.borrow_mut().link(ino, parent, name)?;
         self.getattr(ino)
     }
@@ -313,6 +314,7 @@ impl<'a> Handle<'a> {
                 | FileMode::USER_RWX
                 | FileMode::GROUP_RWX
                 | FileMode::OTHERS_RWX,
+            None,
         )?;
         let fh = self.open(stat.ino, Flags::WRITE_ONLY)?;
         let bytes = link.as_os_str().as_bytes();

@@ -236,9 +236,15 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![parent];
         debug_params!(self.log; mknod; req, parent, name, mode, rdev);
+        let mode = fuse2dk::file_mode(mode);
+        let rdev = if mode.is_device() {
+            Some(rdev as u64)
+        } else {
+            None
+        };
         match self
             .dk
-            .mknod(req.uid(), req.gid(), parent, name, fuse2dk::file_mode(mode))
+            .mknod(req.uid(), req.gid(), parent, name, mode, rdev)
         {
             Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
             Err(e) => {
