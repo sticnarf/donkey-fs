@@ -137,8 +137,11 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         match self.dk.lookup(parent, name) {
             Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
             Err(e) => {
-                info!(self.log, "{}", e);
-                reply.error(ENOENT);
+                match &e {
+                    DkError::NotFound => {}
+                    _ => error!(self.log, "{}", e),
+                }
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -158,7 +161,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             }
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(ENOENT);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -199,7 +202,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(stat) => reply.attr(&TTL, &dk2fuse::file_attr(stat)),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -217,7 +220,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(v) => reply.data(&v[..]),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -240,7 +243,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -255,7 +258,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -267,7 +270,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -279,8 +282,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                // TODO distinguish error codes
-                reply.error(ENOTEMPTY);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -299,7 +301,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -316,12 +318,10 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![parent, newparent];
         debug_params!(self.log; rename; req, parent, name, newparent, newname);
         match self.dk.rename(parent, name, newparent, newname) {
-            Ok(_) => {
-                reply.ok();
-            }
+            Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -336,7 +336,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             }
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(ENOENT);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -355,7 +355,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(v) => reply.data(&v[..]),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -383,7 +383,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(size) => reply.written(size as u32),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -402,7 +402,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -424,7 +424,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
                 Ok(_) => reply.ok(),
                 Err(e) => {
                     error!(self.log, "{}", e);
-                    reply.error(EIO);
+                    reply.error(dk2fuse::errno(&e));
                 }
             }
         }
@@ -444,7 +444,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -459,7 +459,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             }
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(ENOENT);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -496,7 +496,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
                 }
                 Err(e) => {
                     error!(self.log, "{}", e);
-                    reply.error(EIO);
+                    reply.error(dk2fuse::errno(&e));
                     return;
                 }
             }
@@ -512,7 +512,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
                 Ok(_) => reply.ok(),
                 Err(e) => {
                     error!(self.log, "{}", e);
-                    reply.error(EIO);
+                    reply.error(dk2fuse::errno(&e));
                 }
             }
         }
@@ -532,7 +532,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -555,7 +555,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             }
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -576,7 +576,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -599,7 +599,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(None) => reply.error(ENOATTR),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -626,7 +626,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             }
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }
@@ -638,7 +638,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             Ok(_) => reply.ok(),
             Err(e) => {
                 error!(self.log, "{}", e);
-                reply.error(EIO);
+                reply.error(dk2fuse::errno(&e));
             }
         }
     }

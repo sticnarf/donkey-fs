@@ -1,9 +1,9 @@
-use super::*;
 use bincode::{deserialize_from, serialize};
 use byteorder::{ByteOrder, LE};
 use std::fmt::Debug;
 use std::io::{self, BufReader, Read};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
+use *;
 
 pub trait Readable {
     /// Do necessary validation.
@@ -44,9 +44,9 @@ pub(crate) struct SuperBlock {
 /// super block validation
 fn sbv(sb: &SuperBlock) -> DkResult<()> {
     if sb.magic_number != MAGIC_NUMBER {
-        Err(format_err!(
+        Err(Corrupted(format!(
             "Magic number validation failed! It is probably not using Donkey filesystem."
-        ))
+        )))
     } else {
         Ok(())
     }
@@ -82,11 +82,10 @@ pub struct Inode {
 /// inode validation
 fn inv(inode: &Inode) -> DkResult<()> {
     if inode.ino < ROOT_INODE {
-        Err(format_err!(
+        Err(Corrupted(format!(
             "Inode number {} is smaller than the root inode number {}",
-            inode.ino,
-            ROOT_INODE
-        ))
+            inode.ino, ROOT_INODE
+        )))
     } else {
         Ok(())
     }

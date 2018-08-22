@@ -5,8 +5,9 @@ extern crate serde;
 extern crate serde_derive;
 #[macro_use]
 extern crate bitflags;
-#[macro_use]
 extern crate failure;
+#[macro_use]
+extern crate failure_derive;
 extern crate bincode;
 #[macro_use]
 extern crate nix;
@@ -15,7 +16,7 @@ extern crate im;
 
 use block::*;
 use device::Device;
-use failure::Error;
+use failure::Compat;
 use file::{DkDir, DkFile};
 use std::cell::RefCell;
 use std::collections::hash_map::HashMap;
@@ -41,7 +42,58 @@ pub use device::dev;
 pub use file::{DkDirHandle, DkFileHandle};
 pub use ops::Handle;
 
-pub type DkResult<T> = std::result::Result<T, Error>;
+#[derive(Fail, Debug)]
+pub enum DkError {
+    #[fail(display = "IO error: {}", _0)]
+    IoError(#[cause] io::Error),
+    #[fail(display = "File system is corrupted: {}", _0)]
+    Corrupted(String),
+    #[fail(display = "Blocks or inodes are exhausted")]
+    Exhausted,
+    #[fail(display = "Operation or device not supported")]
+    NotSupported,
+    #[fail(display = "Not found")]
+    NotFound,
+    #[fail(display = "Not empty")]
+    NotEmpty,
+    #[fail(display = "Not a directory")]
+    NotDirectory,
+    #[fail(display = "Already exists.")]
+    AlreadyExists,
+    #[fail(display = "{}", _0)]
+    Other(failure::Error),
+}
+
+pub type DkResult<T> = std::result::Result<T, DkError>;
+
+use DkError::*;
+
+impl From<io::Error> for DkError {
+    fn from(error: io::Error) -> DkError {
+        // Look forward to NLL
+        if error.get_ref().is_none() || !error.get_ref().unwrap().is::<Compat<DkError>>() {
+            return IoError(error);
+        }
+        let e: Box<Compat<DkError>> = error.into_inner().unwrap().downcast().unwrap();
+        e.into_inner()
+    }
+}
+
+impl From<bincode::Error> for DkError {
+    fn from(error: bincode::Error) -> DkError {
+        use bincode::ErrorKind::*;
+        match *error {
+            Io(e) => IoError(e),
+            e @ InvalidUtf8Encoding(_)
+            | e @ InvalidBoolEncoding(_)
+            | e @ InvalidCharEncoding
+            | e @ InvalidTagEncoding(_)
+            | e @ DeserializeAnyNotSupported
+            | e @ SequenceMustHaveLength => Corrupted(format!("{}", e)),
+            e @ _ => Other(e.into()),
+        }
+    }
+}
 
 pub fn open<'a>(mut dev: Box<Device + 'a>) -> DkResult<Handle<'a>> {
     let sb = SuperBlock::from_bytes(dev.read_at(SUPER_BLOCK_PTR)?)?;
@@ -125,11 +177,10 @@ impl<'a> Donkey<'a> {
             self.close_files_in_list()?;
             Ok(())
         } else {
-            Err(format_err!(
+            Err(Corrupted(format!(
                 "Expected root inode number to be {}, but got {}.",
-                ROOT_INODE,
-                root_inode
-            ))
+                ROOT_INODE, root_inode
+            )))
         }
     }
 
@@ -242,7 +293,7 @@ impl<'a> Donkey<'a> {
             self.flush_sb()?;
             Ok(Inode::ino(fi_ptr))
         } else {
-            Err(format_err!("Inodes are used up!"))
+            Err(Exhausted)
         }
     }
 
@@ -265,7 +316,7 @@ impl<'a> Donkey<'a> {
             self.flush_sb()?;
             Ok(fd_ptr)
         } else {
-            Err(format_err!("Data blocks are used up!"))
+            Err(Exhausted)
         }
     }
 
@@ -535,3 +586,20 @@ pub mod device;
 pub mod file;
 pub mod ops;
 pub mod replies;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_error() {
+        use failure::Fail;
+        let dk = Corrupted("whatever".to_string());
+        let io = io::Error::new(io::ErrorKind::Other, dk.compat());
+        let dk: DkError = io.into();
+        match dk {
+            Corrupted(msg) => assert_eq!(msg, "whatever"),
+            _ => unreachable!(),
+        }
+    }
+}
