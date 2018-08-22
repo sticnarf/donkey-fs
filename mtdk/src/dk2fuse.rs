@@ -18,7 +18,7 @@ pub fn file_type(mode: FileMode) -> FileType {
 }
 
 pub fn permission(mode: FileMode) -> u16 {
-    0o777 & mode.bits() as u16
+    0o7777 & mode.bits() as u16
 }
 
 pub fn timespec(t: DkTimespec) -> Timespec {
