@@ -150,9 +150,9 @@ impl BlockDevice {
     /// at this time.
     fn new(file: File) -> DkResult<Self> {
         let file_type = file.metadata()?.file_type();
-        // `file` must be a block device
-        assert!(file_type.is_block_device());
-        let size = Self::block_dev_size(&file)?;
+        // `file` must be a block device or a character device (on FreeBSD)
+        assert!(file_type.is_block_device() || file_type.is_char_device());
+        let size = Self::dev_size(&file)?;
 
         let dev = BlockDevice {
             file,
@@ -162,7 +162,7 @@ impl BlockDevice {
         Ok(dev)
     }
 
-    fn block_dev_size(dev: &File) -> DkResult<u64> {
+    fn dev_size(dev: &File) -> DkResult<u64> {
         let fd = dev.as_raw_fd();
         #[cfg(target_os = "linux")]
         fn getsize(fd: RawFd) -> DkResult<u64> {
