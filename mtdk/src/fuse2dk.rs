@@ -21,9 +21,11 @@ pub fn file_mode(mode: u32) -> FileMode {
         let mode = mode as c_int;
         if (mode & S_ISUID) != 0 {
             res |= FileMode::SET_USER_ID;
-        } else if (mode & S_ISGID) != 0 {
+        }
+        if (mode & S_ISGID) != 0 {
             res |= FileMode::SET_GROUP_ID;
-        } else if (mode & S_ISVTX) != 0 {
+        }
+        if (mode & S_ISVTX) != 0 {
             res |= FileMode::STICKY;
         }
     }
