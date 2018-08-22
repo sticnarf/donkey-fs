@@ -58,6 +58,7 @@ fn mknod_in_root() -> DkResult<()> {
         ROOT_INODE,
         OsStr::new("Homura"),
         FileMode::REGULAR_FILE | FileMode::USER_RWX,
+        None,
     )?;
     assert_eq!(stat.uid, 0);
     assert_eq!(stat.gid, 0);
@@ -76,7 +77,7 @@ fn mknod_in_newdir() -> DkResult<()> {
     assert!(stat.mode.is_directory());
     let dir_ino = stat.ino;
     let homura = OsStr::new("Homura");
-    let stat = handle.mknod(0, 0, dir_ino, homura, FileMode::REGULAR_FILE)?;
+    let stat = handle.mknod(0, 0, dir_ino, homura, FileMode::REGULAR_FILE, None)?;
     assert_eq!(handle.lookup(dir_ino, homura)?, stat);
     let dir = handle.opendir(dir_ino)?;
     assert!(
@@ -96,6 +97,7 @@ fn set_attrs_except_size() -> DkResult<()> {
         ROOT_INODE,
         OsStr::new("Homura"),
         FileMode::REGULAR_FILE | FileMode::USER_RWX,
+        None,
     )?;
     let ino = stat.ino;
     let stat = handle.setattr(
@@ -167,6 +169,7 @@ fn set_fh_attrs_except_size() -> DkResult<()> {
         ROOT_INODE,
         OsStr::new("Homura"),
         FileMode::REGULAR_FILE | FileMode::USER_RWX,
+        None,
     )?;
     let ino = stat.ino;
     let fh = handle.open(ino, Flags::READ_ONLY)?;
@@ -244,7 +247,7 @@ fn traverse_dir() -> DkResult<()> {
         .map(|name| name.to_string().into())
         .collect();
     for name in &names {
-        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
+        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE, None)?;
     }
     names.insert(".".to_string().into());
     names.insert("..".to_string().into());
@@ -266,7 +269,7 @@ fn traverse_big_dir() -> DkResult<()> {
                 .into()
         }).collect();
     for name in &names {
-        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
+        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE, None)?;
     }
     names.insert(".".to_string().into());
     names.insert("..".to_string().into());
@@ -291,7 +294,7 @@ fn read_write() -> DkResult<()> {
             (name, data)
         }).collect();
     for (name, data) in &files {
-        let stat = handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
+        let stat = handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE, None)?;
         let fh = handle.open(stat.ino, Flags::WRITE_ONLY)?;
         let len = handle.write(fh, 0, data)?;
         assert_eq!(len, data.len());
@@ -328,7 +331,7 @@ fn xattrs() -> DkResult<()> {
     prepare!(handle);
     let madoka = OsStr::new("Madoka");
     let homura = OsStr::new("Homura");
-    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE, None)?;
     assert!(handle.listxattr(stat.ino)?.is_empty());
     assert_eq!(handle.getxattr(stat.ino, madoka)?, None);
 
@@ -354,7 +357,7 @@ fn unlink() -> DkResult<()> {
         .map(|name| name.to_string().into())
         .collect();
     for name in &names {
-        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE)?;
+        handle.mknod(0, 0, ROOT_INODE, name, FileMode::REGULAR_FILE, None)?;
     }
     let mami = OsStr::new("巴マミ");
     handle.unlink(ROOT_INODE, mami)?;
@@ -374,7 +377,7 @@ fn shrink_size() -> DkResult<()> {
     let mut rng = XorShiftRng::from_seed([1, 1, 4, 5, 1, 4, 1, 9, 1, 9, 8, 1, 0, 8, 9, 3]);
     let homura = OsStr::new("Homura");
     let data: Vec<u8> = rng.sample_iter(&Standard).take(1 << 24).collect(); // 16 MB
-    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE, None)?;
     let statfs = handle.statfs()?;
 
     let fh = handle.open(stat.ino, Flags::WRITE_ONLY)?;
@@ -413,7 +416,7 @@ fn rename() -> DkResult<()> {
 
     let homura = OsStr::new("Homura");
     let madoka = OsStr::new("Madoka");
-    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE)?;
+    let stat = handle.mknod(0, 0, ROOT_INODE, homura, FileMode::REGULAR_FILE, None)?;
     let new_dir = handle
         .mkdir(ROOT_INODE, 0, 0, OsStr::new("newdir"), FileMode::USER_RWX)?
         .ino;
@@ -431,7 +434,7 @@ fn rmdir() -> DkResult<()> {
     let madoka = OsStr::new("Madoka");
     let statfs = handle.statfs()?;
     let new_dir = handle.mkdir(ROOT_INODE, 0, 0, homura, FileMode::USER_RWX)?;
-    handle.mknod(0, 0, new_dir.ino, madoka, FileMode::REGULAR_FILE)?;
+    handle.mknod(0, 0, new_dir.ino, madoka, FileMode::REGULAR_FILE, None)?;
     assert_eq!(handle.getattr(ROOT_INODE)?.nlink, 3);
     assert!(handle.rmdir(ROOT_INODE, homura).is_err());
     handle.unlink(new_dir.ino, madoka)?;
@@ -502,7 +505,7 @@ fn exhaust_inodes() -> DkResult<()> {
         } else {
             if let Some(name) = unused.pop() {
                 let ino = dirs[i % dirs.len()];
-                handle.mknod(0, 0, ino, name, FileMode::REGULAR_FILE)?;
+                handle.mknod(0, 0, ino, name, FileMode::REGULAR_FILE, None)?;
                 used.push((ino, name));
             }
         }
