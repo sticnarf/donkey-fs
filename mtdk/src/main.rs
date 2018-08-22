@@ -326,6 +326,25 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         }
     }
 
+    fn link(
+        &mut self,
+        req: &Request,
+        ino: u64,
+        newparent: u64,
+        newname: &OsStr,
+        reply: ReplyEntry,
+    ) {
+        ino![ino, newparent];
+        debug_params!(self.log; link; req, ino, newparent, newname);
+        match self.dk.link(ino, newparent, newname) {
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Err(e) => {
+                error!(self.log, "{}", e);
+                reply.error(dk2fuse::errno(&e));
+            }
+        }
+    }
+
     fn open(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
         ino![ino];
         debug_params!(self.log; open; req, ino, flags);

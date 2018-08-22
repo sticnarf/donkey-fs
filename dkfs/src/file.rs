@@ -566,7 +566,20 @@ impl DkDirHandle {
             ordmap::Entry::Occupied(_) => Err(AlreadyExists),
         };
         self.borrow_mut().dirty = true;
+        let dh = self.borrow();
+        dh.fh.borrow_mut().inode.ctime = SystemTime::now().into();
+        dh.fh.borrow_mut().inode.mtime = SystemTime::now().into();
         res
+    }
+
+    pub(crate) fn remove_entry(&self, name: &OsStr) -> DkResult<Option<u64>> {
+        let mut dir = self.borrow_mut();
+        Ok(dir.entries.remove(name).map(|ino| {
+            dir.fh.borrow_mut().inode.ctime = SystemTime::now().into();
+            dir.fh.borrow_mut().inode.mtime = SystemTime::now().into();
+            dir.dirty = true;
+            ino
+        }))
     }
 }
 

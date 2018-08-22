@@ -102,6 +102,15 @@ impl<'a> Handle<'a> {
         self.getattr(ino)
     }
 
+    pub fn link(&self, ino: u64, parent: u64, name: &OsStr) -> DkResult<Stat> {
+        if name.len() > MAX_NAMELEN as usize {
+            return Err(NameTooLong);
+        }
+        let parent = self.opendir(parent)?;
+        self.inner.borrow_mut().link(ino, parent, name)?;
+        self.getattr(ino)
+    }
+
     pub fn open(&self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
         self.inner.borrow_mut().open(ino, flags)
     }
