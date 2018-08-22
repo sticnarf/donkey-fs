@@ -60,6 +60,8 @@ pub enum DkError {
     NotDirectory,
     #[fail(display = "Already exists.")]
     AlreadyExists,
+    #[fail(display = "Invalid argument: {}", _0)]
+    Invalid(String),
     #[fail(display = "{}", _0)]
     Other(failure::Error),
 }
@@ -387,6 +389,9 @@ impl<'a> Donkey<'a> {
 
     fn open(&mut self, ino: u64, flags: Flags) -> DkResult<DkFileHandle> {
         self.close_files_in_list()?;
+        if flags == Flags::INVALID {
+            return Err(Invalid("Open with invalid flags.".to_string()));
+        }
         // We do not use entry API here to prevent `self` being borrowed twice
         let inner = if let Some(fh) = self.opened_files.get(&ino).map(|fh| fh.clone()) {
             fh
@@ -573,6 +578,7 @@ bitflags! {
     #[derive(Serialize, Deserialize)]
     pub struct Flags: u32 {
         const ACCESS_MODE_MASK = 0b00000000_00000011;
+        const INVALID          = 0b00000000_00000011;
         const READ_ONLY        = 0b00000000_00000000;
         const WRITE_ONLY       = 0b00000000_00000001;
         const READ_WRITE       = 0b00000000_00000010;

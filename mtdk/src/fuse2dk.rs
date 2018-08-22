@@ -68,7 +68,7 @@ pub fn flags(flags: u32) -> Flags {
         O_RDONLY => res |= Flags::READ_ONLY,
         O_WRONLY => res |= Flags::WRITE_ONLY,
         O_RDWR => res |= Flags::READ_WRITE,
-        _ => unreachable!(),
+        _ => return Flags::INVALID,
     }
 
     let flags = flags as c_int;
