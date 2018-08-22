@@ -274,10 +274,14 @@ impl<'a> Handle<'a> {
             return Err(NameTooLong);
         }
         let ino = self.lookup(old_parent, name)?.ino;
+        if let Ok(stat) = self.lookup(new_parent, new_name) {
+            if stat.mode.is_directory() {
+                self.rmdir(new_parent, new_name)?;
+            } else {
+                self.unlink(new_parent, new_name)?;
+            }
+        }
         let new_parent = self.opendir(new_parent)?;
-        self.inner
-            .borrow_mut()
-            .unlink(new_parent.clone(), new_name)?;
         self.inner.borrow_mut().link(ino, new_parent, new_name)?;
         self.unlink(old_parent, name)?;
         Ok(())
