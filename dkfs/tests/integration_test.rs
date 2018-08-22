@@ -422,7 +422,7 @@ fn rename() -> DkResult<()> {
         .ino;
     handle.rename(ROOT_INODE, homura, new_dir, madoka)?;
     assert!(handle.lookup(ROOT_INODE, homura).is_err());
-    assert_eq!(stat, handle.lookup(new_dir, madoka)?);
+    assert_eq!(stat.blocks, handle.lookup(new_dir, madoka)?.blocks);
     Ok(())
 }
 
