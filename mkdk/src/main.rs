@@ -9,7 +9,7 @@ fn main() -> DkResult<()> {
 
     let bpi = format!("{}", DEFAULT_BYTES_PER_INODE);
     let matches = App::new("mkdk")
-        .version("0.1")
+        .version("0.1.1")
         .author("Yilin Chen <sticnarf@gmail.com>")
         .about("Make a donkey file system")
         .arg(

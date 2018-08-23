@@ -5,25 +5,60 @@
 Donkey is a simple and naive file system for purposes of learning.
 **Performance or reliability is never taken into consideration.**
 
-This project contains:
-
-* `dkfs`: Library that supports `mkdk` and `mtdk`.
-* `mkdk`: Binary to make a donkey file system.
-* `mtdk`: Binary to mount a donkey file system.
+It has passed [pjdfstest](https://github.com/pjd/pjdfstest/) for correctness.
 
 ## Build
 
 Rust 1.28 or above is required in order to build this project.
 
-`pkg-config` and `libfuse-dev` are needed to build `mtdk`.
+`pkg-config` and libfuse 2.x headers are needed to build `mtdk`.
 
 Prebuilt binaries are available in the [releases section](https://github.com/sticnarf/donkey-fs/releases).
 
-## Usage
+## Format
 
-Run `mkdk --help` or `mtdk --help` for usage.
+`mkdk` is the format tool. 
 
-Fuse 2.x library should be installed if you use `mtdk`.
+The `device` argument accepts regular files or block special files.
+
+The size of a block device is automatically detected.
+
+You can specify your own bytes/inode ratio for the file system.
+Pay attention that this ratio cannot be modified after formatting.
+
+```
+USAGE:
+    mkdk [OPTIONS] <device>
+
+OPTIONS:
+    -i <bytes-per-inode>        Specify the bytes/inode ratio [default: 16384]
+
+ARGS:
+    <device>    Path to the device to be used
+```
+
+## Mount
+
+Although this file system is not designed to depend on Linux FUSE, 
+the only way to mount a donkey file system now is to use `mtdk` with libfuse 2.x.
+
+So you must install libfuse 2.x (`libfuse2` on Debian/Ubuntu) before running `mtdk`.
+
+Note that `allow_other` option is enabled, so non-root users cannot mount using `mtdk` 
+unless you uncomment the `user_allow_other` line in `/etc/fuse.conf`. 
+
+```
+USAGE:
+    mtdk <device> <dir>
+
+FLAGS:
+    -h, --help       Prints help information
+    -V, --version    Prints version information
+
+ARGS:
+    <device>    Path to the device to be used
+    <dir>       Path of the mount point
+```
 
 ## Limitations
 
