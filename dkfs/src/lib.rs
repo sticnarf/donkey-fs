@@ -584,8 +584,6 @@ bitflags! {
         const READ_ONLY        = 0b00000000_00000000;
         const WRITE_ONLY       = 0b00000000_00000001;
         const READ_WRITE       = 0b00000000_00000010;
-
-        const APPEND           = 0b00000100_00000000;
     }
 }
 

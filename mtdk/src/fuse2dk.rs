@@ -72,12 +72,6 @@ pub fn flags(flags: u32) -> Flags {
         O_RDWR => res |= Flags::READ_WRITE,
         _ => return Flags::INVALID,
     }
-
-    let flags = flags as c_int;
-    if (flags & O_APPEND) != 0 {
-        res |= Flags::APPEND;
-    }
-
     res
 }
 

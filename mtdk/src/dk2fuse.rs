@@ -30,17 +30,12 @@ pub fn timespec(t: DkTimespec) -> Timespec {
 
 pub fn flags(flags: Flags) -> u32 {
     let access_flags = flags & Flags::ACCESS_MODE_MASK;
-    let mut res = match access_flags {
+    let res = match access_flags {
         Flags::READ_ONLY => O_RDONLY,
         Flags::WRITE_ONLY => O_WRONLY,
         Flags::READ_WRITE => O_RDWR,
         _ => unreachable!(),
     };
-
-    if flags.contains(Flags::APPEND) {
-        res |= O_APPEND;
-    }
-
     res as u32
 }
 
