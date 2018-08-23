@@ -375,6 +375,11 @@ impl DkFile {
             self.free_file_db(dk, free_from)?;
         }
         self.inode.size = new_size;
+        if !self.inode.mode.is_directory() {
+            // A directory's ctime and mtime is managed by DkDirHandle
+            self.inode.mtime = SystemTime::now().into();
+            self.inode.ctime = SystemTime::now().into();
+        }
         Ok(())
     }
 
