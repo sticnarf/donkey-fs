@@ -354,7 +354,13 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn open(&mut self, req: &Request, ino: u64, flags: u32, reply: ReplyOpen) {
         ino![ino];
         debug_params!(self.log; open; req, ino, flags);
-        match self.dk.open(ino, fuse2dk::flags(flags)) {
+        // clear set-user-id and set-group-id bits if uid is not root
+        let flags = fuse2dk::flags(flags);
+        let mut res = self.dk.open(ino, flags);
+        if req.uid() != 0 {
+            res = res.and_then(|fh| self.dk.clear_set_bits(fh));
+        }
+        match res {
             Ok(fh) => {
                 reply.opened(req.unique(), dk2fuse::flags(fh.flags));
                 self.file_fh.insert(req.unique(), fh);

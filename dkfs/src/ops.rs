@@ -331,4 +331,13 @@ impl<'a> Handle<'a> {
         }
         self.getattr(stat.ino)
     }
+
+    pub fn clear_set_bits(&self, fh: DkFileHandle) -> DkResult<DkFileHandle> {
+        let mut mode = fh.borrow().inode.mode;
+        mode.remove(FileMode::SET_USER_ID);
+        mode.remove(FileMode::SET_GROUP_ID);
+        fh.borrow_mut().inode.mode = mode;
+        fh.borrow_mut().dirty = true;
+        Ok(fh)
+    }
 }
