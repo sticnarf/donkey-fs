@@ -9,7 +9,7 @@ sudo losetup /dev/fake-dev0 /opt/fake-dev0-backstore
 # Format and mount
 sudo mkdir -p /dkfs
 sudo target/debug/mkdk /dev/fake-dev0
-sudo target/debug/mtdk /dev/fake-dev0 /dkfs &
+sudo target/debug/mtdk /dev/fake-dev0 /dkfs > /tmp/dkfs.log &
 sleep 1
 
 set -e
