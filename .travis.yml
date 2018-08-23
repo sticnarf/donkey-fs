@@ -11,4 +11,4 @@ cache: cargo
 script:
   - cargo build --verbose
   - cargo test --verbose
-  - bash tests/test_all.sh
+  - bash tests/pjdfstest.sh

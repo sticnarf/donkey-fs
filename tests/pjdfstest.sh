@@ -1,6 +1,5 @@
-######################
-## Real world tests ##
-######################
+#!/bin/sh
+# Run pjdfstest from https://github.com/pjd/pjdfstest
 
 # Create a fake block device
 sudo fallocate -l 512M /opt/fake-dev0-backstore
@@ -27,4 +26,14 @@ function cleanup {
 }
 trap cleanup EXIT
 
+# Get tests ready
+cd /tmp
+git clone https://github.com/pjd/pjdfstest.git --depth=1
+cd pjdfstest
+autoreconf -ifs
+./configure
+make pjdfstest -j
+
 # Run tests
+cd /dkfs
+sudo prove -rv /tmp/pjdfstest/tests
