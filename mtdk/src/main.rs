@@ -56,20 +56,20 @@ fn main() -> DkResult<()> {
 
     let dk = dkfs::open(dev(dev_path)?)?;
     let fuse = DonkeyFuse {
-        dk: dk,
+        dk,
         log: log.clone(),
         dir_fh: HashMap::new(),
         file_fh: HashMap::new(),
     };
     if daemon {
-        mount_as_daemon(fuse, mount_point, options, log);
+        mount_as_daemon(fuse, &mount_point, &options, log);
     } else {
         fuse::mount(fuse, &mount_point, &options)?;
     }
     Ok(())
 }
 
-fn mount_as_daemon(fuse: DonkeyFuse, mount_point: &str, options: Vec<&OsStr>, log: Logger) {
+fn mount_as_daemon(fuse: DonkeyFuse, mount_point: &str, options: &[&OsStr], log: Logger) {
     use nix::unistd::{fork, ForkResult};
 
     match fork() {
@@ -154,7 +154,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![parent];
         debug_params!(self.log; lookup; req, parent, name);
         match self.dk.lookup(parent, name) {
-            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(&stat), req.unique()),
             Err(e) => {
                 match &e {
                     DkError::NotFound => {}
@@ -176,7 +176,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         debug_params!(self.log; getattr; req, ino);
         match self.dk.getattr(ino) {
             Ok(stat) => {
-                reply.attr(&TTL, &dk2fuse::file_attr(stat));
+                reply.attr(&TTL, &dk2fuse::file_attr(&stat));
             }
             Err(e) => {
                 error!(self.log, "{}", e);
@@ -205,7 +205,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![ino];
         debug_params!(self.log; setattr;
             req, ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags);
-        let fh = fh.and_then(|fh| self.file_fh.get(&fh)).map(|fh| fh.clone());
+        let fh = fh.and_then(|fh| self.file_fh.get(&fh)).cloned();
         match self.dk.setattr(
             ino,
             fh,
@@ -218,7 +218,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             chgtime.map(fuse2dk::timespec),
             crtime.map(fuse2dk::timespec),
         ) {
-            Ok(stat) => reply.attr(&TTL, &dk2fuse::file_attr(stat)),
+            Ok(stat) => reply.attr(&TTL, &dk2fuse::file_attr(&stat)),
             Err(e) => {
                 error!(self.log, "{}", e);
                 reply.error(dk2fuse::errno(&e));
@@ -265,7 +265,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             .dk
             .mknod(req.uid(), req.gid(), parent, name, mode, rdev)
         {
-            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(&stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
                 reply.error(dk2fuse::errno(&e));
@@ -280,7 +280,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
             .dk
             .mkdir(parent, req.uid(), req.gid(), name, fuse2dk::file_mode(mode))
         {
-            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(&stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
                 reply.error(dk2fuse::errno(&e));
@@ -323,7 +323,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![parent];
         debug_params!(self.log; symlink; req, parent, name, link);
         match self.dk.symlink(req.uid(), req.gid(), parent, name, link) {
-            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(&stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
                 reply.error(dk2fuse::errno(&e));
@@ -362,7 +362,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
         ino![ino, newparent];
         debug_params!(self.log; link; req, ino, newparent, newname);
         match self.dk.link(ino, newparent, newname) {
-            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(stat), req.unique()),
+            Ok(stat) => reply.entry(&TTL, &dk2fuse::file_attr(&stat), req.unique()),
             Err(e) => {
                 error!(self.log, "{}", e);
                 reply.error(dk2fuse::errno(&e));
@@ -469,7 +469,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     ) {
         ino![ino];
         debug_params!(self.log; release; req, ino, fh, flags, lock_owner, flush);
-        if let Some(_) = self.file_fh.remove(&fh) {
+        if self.file_fh.remove(&fh).is_some() {
             match self.dk.apply_releases() {
                 Ok(_) => reply.ok(),
                 Err(e) => {
@@ -557,7 +557,7 @@ impl<'a> Filesystem for DonkeyFuse<'a> {
     fn releasedir(&mut self, req: &Request, ino: u64, fh: u64, flags: u32, reply: ReplyEmpty) {
         ino![ino];
         debug_params!(self.log; releasedir; req, ino, fh, flags);
-        if let Some(_) = self.dir_fh.remove(&fh) {
+        if self.dir_fh.remove(&fh).is_some() {
             match self.dk.apply_releases() {
                 Ok(_) => reply.ok(),
                 Err(e) => {

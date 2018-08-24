@@ -27,7 +27,7 @@ impl Writable for Box<Writable> {
     }
 }
 
-pub(crate) const MAGIC_NUMBER: u64 = 0x1BADFACEDEADC0DE;
+pub(crate) const MAGIC_NUMBER: u64 = 0x1BAD_FACE_DEAD_C0DE;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub(crate) struct SuperBlock {

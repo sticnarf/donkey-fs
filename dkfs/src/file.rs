@@ -81,7 +81,7 @@ impl Seek for DkFile {
 impl DkFile {
     pub(crate) fn new(inode: Inode, close_file_list: Rc<RefCell<Vec<u64>>>) -> Self {
         DkFile {
-            inode: inode,
+            inode,
             pos: 0,
             xattr: OrdMap::new(),
             dirty: false,
@@ -239,7 +239,7 @@ impl DkFile {
                 off %= ipc;
                 level -= 1;
             }
-            let ref mut cache = self.ptr_cache[0].as_mut().unwrap().1;
+            let cache = &mut self.ptr_cache[0].as_mut().unwrap().1;
             if cache.0[off] == 0 {
                 cache.0[off] = dk.allocate_db()?;
                 self.inode.blocks += 1;
@@ -320,7 +320,7 @@ impl DkFile {
                 off %= ipc;
                 level -= 1;
             }
-            let ref cache = self.ptr_cache[0].as_mut().unwrap().1;
+            let cache = &self.ptr_cache[0].as_mut().unwrap().1;
             if cache.0[off] == 0 {
                 Ok(None)
             } else {

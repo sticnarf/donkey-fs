@@ -39,7 +39,7 @@ pub fn flags(flags: Flags) -> u32 {
     res as u32
 }
 
-pub fn file_attr(stat: Stat) -> FileAttr {
+pub fn file_attr(stat: &Stat) -> FileAttr {
     FileAttr {
         ino: stat.ino,
         size: stat.size,

@@ -35,7 +35,7 @@ const FIRST_INODE_PTR: u64 = SUPER_BLOCK_PTR + SUPER_BLOCK_SIZE;
 pub const DEFAULT_BYTES_PER_INODE: u64 = 16384;
 /// This cannot be a very small integer. Inode numbers of
 /// small integers are reserved for special use.
-pub const ROOT_INODE: u64 = 114514;
+pub const ROOT_INODE: u64 = 114_514;
 const MAX_NAMELEN: u32 = 256;
 
 pub use device::dev;
@@ -94,7 +94,7 @@ impl From<bincode::Error> for DkError {
             | e @ InvalidTagEncoding(_)
             | e @ DeserializeAnyNotSupported
             | e @ SequenceMustHaveLength => Corrupted(format!("{}", e)),
-            e @ _ => Other(e.into()),
+            e => Other(e.into()),
         }
     }
 }
@@ -395,7 +395,7 @@ impl<'a> Donkey<'a> {
             return Err(Invalid("Open with invalid flags.".to_string()));
         }
         // We do not use entry API here to prevent `self` being borrowed twice
-        let inner = if let Some(fh) = self.opened_files.get(&ino).map(|fh| fh.clone()) {
+        let inner = if let Some(fh) = self.opened_files.get(&ino).cloned() {
             fh
         } else {
             let inode = self.read_inode(ino)?;
@@ -413,7 +413,7 @@ impl<'a> Donkey<'a> {
     fn open_dir(&mut self, ino: u64) -> DkResult<DkDirHandle> {
         self.close_dirs_in_list()?;
         // We do not use entry API here to prevent `self` being borrowed twice
-        let inner = if let Some(dh) = self.opened_dirs.get(&ino).map(|dh| dh.clone()) {
+        let inner = if let Some(dh) = self.opened_dirs.get(&ino).cloned() {
             dh
         } else {
             let fh = self.open(ino, Flags::READ_WRITE)?;
@@ -510,31 +510,31 @@ impl From<SystemTime> for DkTimespec {
 bitflags! {
     #[derive(Serialize, Deserialize)]
     pub struct FileMode: u16 {
-        const FILE_TYPE_MASK   = 0b11110000_00000000;
-        const SOCKET           = 0b11000000_00000000;
-        const REGULAR_FILE     = 0b10000000_00000000;
-        const DIRECTORY        = 0b01000000_00000000;
-        const SYMBOLIC_LINK    = 0b10100000_00000000;
-        const CHARACTER_DEVICE = 0b00100000_00000000;
-        const BLOCK_DEVICE     = 0b01100000_00000000;
-        const FIFO             = 0b00010000_00000000;
+        const FILE_TYPE_MASK   = 0b1111_0000_0000_0000;
+        const SOCKET           = 0b1100_0000_0000_0000;
+        const REGULAR_FILE     = 0b1000_0000_0000_0000;
+        const DIRECTORY        = 0b0100_0000_0000_0000;
+        const SYMBOLIC_LINK    = 0b1010_0000_0000_0000;
+        const CHARACTER_DEVICE = 0b0010_0000_0000_0000;
+        const BLOCK_DEVICE     = 0b0110_0000_0000_0000;
+        const FIFO             = 0b0001_0000_0000_0000;
 
-        const SET_USER_ID      = 0b00001000_00000000;
-        const SET_GROUP_ID     = 0b00000100_00000000;
-        const STICKY           = 0b00000010_00000000;
+        const SET_USER_ID      = 0b0000_1000_0000_0000;
+        const SET_GROUP_ID     = 0b0000_0100_0000_0000;
+        const STICKY           = 0b0000_0010_0000_0000;
 
-        const USER_READ        = 0b00000001_00000000;
-        const USER_WRITE       = 0b00000000_10000000;
-        const USER_EXECUTE     = 0b00000000_01000000;
-        const GROUP_READ       = 0b00000000_00100000;
-        const GROUP_WRITE      = 0b00000000_00010000;
-        const GROUP_EXECUTE    = 0b00000000_00001000;
-        const OTHERS_READ      = 0b00000000_00000100;
-        const OTHERS_WRITE     = 0b00000000_00000010;
-        const OTHERS_EXECUTE   = 0b00000000_00000001;
-        const USER_RWX         = 0b00000001_11000000;
-        const GROUP_RWX        = 0b00000000_00111000;
-        const OTHERS_RWX       = 0b00000000_00000111;
+        const USER_READ        = 0b0000_0001_0000_0000;
+        const USER_WRITE       = 0b0000_0000_1000_0000;
+        const USER_EXECUTE     = 0b0000_0000_0100_0000;
+        const GROUP_READ       = 0b0000_0000_0010_0000;
+        const GROUP_WRITE      = 0b0000_0000_0001_0000;
+        const GROUP_EXECUTE    = 0b0000_0000_0000_1000;
+        const OTHERS_READ      = 0b0000_0000_0000_0100;
+        const OTHERS_WRITE     = 0b0000_0000_0000_0010;
+        const OTHERS_EXECUTE   = 0b0000_0000_0000_0001;
+        const USER_RWX         = 0b0000_0001_1100_0000;
+        const GROUP_RWX        = 0b0000_0000_0011_1000;
+        const OTHERS_RWX       = 0b0000_0000_0000_0111;
     }
 }
 
@@ -579,11 +579,11 @@ impl FileMode {
 bitflags! {
     #[derive(Serialize, Deserialize)]
     pub struct Flags: u32 {
-        const ACCESS_MODE_MASK = 0b00000000_00000011;
-        const INVALID          = 0b00000000_00000011;
-        const READ_ONLY        = 0b00000000_00000000;
-        const WRITE_ONLY       = 0b00000000_00000001;
-        const READ_WRITE       = 0b00000000_00000010;
+        const ACCESS_MODE_MASK = 0b0000_0000_0000_0011;
+        const INVALID          = 0b0000_0000_0000_0011;
+        const READ_ONLY        = 0b0000_0000_0000_0000;
+        const WRITE_ONLY       = 0b0000_0000_0000_0001;
+        const READ_WRITE       = 0b0000_0000_0000_0010;
     }
 }
 

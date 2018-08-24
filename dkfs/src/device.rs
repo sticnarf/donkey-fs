@@ -18,7 +18,7 @@ pub trait Device: Read + Write + Seek + Debug {
     /// No length limit
     fn read_at<'a>(&'a mut self, ptr: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
-        if ptr >= size {
+        if ptr > size {
             Err(Corrupted(format!(
                 "Read at {}, but device size is {}",
                 ptr, size
@@ -32,7 +32,7 @@ pub trait Device: Read + Write + Seek + Debug {
     /// Limit length to `len`
     fn read_len_at<'a>(&'a mut self, ptr: u64, len: u64) -> DkResult<Box<dyn Read + 'a>> {
         let size = self.size();
-        if ptr + len >= size {
+        if ptr + len > size {
             Err(Corrupted(format!(
                 "Read {} bytes at {}, but device size is {}",
                 len, ptr, size
@@ -53,7 +53,7 @@ pub trait Device: Read + Write + Seek + Debug {
         let size = self.size();
         let bytes = writable.as_bytes()?;
         let len = bytes.len() as u64;
-        if ptr + len >= size {
+        if ptr + len > size {
             Err(Corrupted(format!(
                 "Write {} bytes at {}, but device size is {}",
                 len, ptr, size

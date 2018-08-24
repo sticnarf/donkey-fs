@@ -21,7 +21,7 @@ impl<'a> Handle<'a> {
     }
 
     pub fn statfs(&self) -> DkResult<Statvfs> {
-        let ref sb = self.inner.borrow().sb;
+        let sb = &self.inner.borrow().sb;
         let stat = Statvfs {
             blocks: sb.db_count,
             bfree: sb.db_count - sb.used_db_count,
@@ -37,7 +37,7 @@ impl<'a> Handle<'a> {
     pub fn getattr(&self, ino: u64) -> DkResult<Stat> {
         let f = self.inner.borrow_mut().open(ino, Flags::READ_ONLY)?;
         let statfs = self.statfs()?;
-        let ref inode = f.inner.borrow_mut().inode;
+        let inode = &f.inner.borrow_mut().inode;
         let stat = Stat {
             ino,
             mode: inode.mode,
@@ -210,7 +210,7 @@ impl<'a> Handle<'a> {
         }
         let fh = self.open(ino, Flags::READ_ONLY)?;
         let fh = fh.borrow();
-        Ok(fh.xattr.get(name).map(|v| v.clone()))
+        Ok(fh.xattr.get(name).cloned()
     }
 
     pub fn listxattr(&self, ino: u64) -> DkResult<Vec<OsString>> {
