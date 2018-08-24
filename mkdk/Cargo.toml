@@ -1,6 +1,6 @@
 [package]
 name = "mkdk"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Yilin Chen <sticnarf@gmail.com>"]
 
 [dependencies]

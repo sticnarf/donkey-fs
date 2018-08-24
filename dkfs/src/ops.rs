@@ -210,7 +210,7 @@ impl<'a> Handle<'a> {
         }
         let fh = self.open(ino, Flags::READ_ONLY)?;
         let fh = fh.borrow();
-        Ok(fh.xattr.get(name).cloned()
+        Ok(fh.xattr.get(name).cloned())
     }
 
     pub fn listxattr(&self, ino: u64) -> DkResult<Vec<OsString>> {

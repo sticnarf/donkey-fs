@@ -22,7 +22,7 @@ fn main() -> DkResult<()> {
     use clap::*;
 
     let matches = App::new("mtdk")
-        .version("0.1.1")
+        .version("0.1.2")
         .author("Yilin Chen <sticnarf@gmail.com>")
         .about("Mount a donkey file system")
         .arg(
