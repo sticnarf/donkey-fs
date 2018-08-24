@@ -49,11 +49,10 @@ unless you uncomment the `user_allow_other` line in `/etc/fuse.conf`.
 
 ```
 USAGE:
-    mtdk <device> <dir>
+    mtdk [FLAGS] <device> <dir>
 
 FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
+    -d               Run as a daemon
 
 ARGS:
     <device>    Path to the device to be used
