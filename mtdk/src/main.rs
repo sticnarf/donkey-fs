@@ -5,6 +5,7 @@ extern crate dkfs;
 extern crate failure;
 extern crate fuse;
 extern crate libc;
+extern crate nix;
 extern crate slog_term;
 extern crate time;
 
@@ -32,11 +33,13 @@ fn main() -> DkResult<()> {
             Arg::with_name("dir")
                 .help("Path of the mount point")
                 .required(true),
-        ).get_matches();
+        ).arg(Arg::with_name("daemon").short("d").help("Run as a daemon"))
+        .get_matches();
 
     let log = logger();
     let dev_path = matches.value_of("device").unwrap();
-    let dir = matches.value_of("dir").unwrap();
+    let mount_point = matches.value_of("dir").unwrap();
+    let daemon = matches.is_present("daemon");
     let options = [
         "-o",
         "fsname=donkey",
@@ -54,12 +57,28 @@ fn main() -> DkResult<()> {
     let dk = dkfs::open(dev(dev_path)?)?;
     let fuse = DonkeyFuse {
         dk: dk,
-        log,
+        log: log.clone(),
         dir_fh: HashMap::new(),
         file_fh: HashMap::new(),
     };
-    fuse::mount(fuse, &dir, &options)?;
+    if daemon {
+        mount_as_daemon(fuse, mount_point, options, log);
+    } else {
+        fuse::mount(fuse, &mount_point, &options)?;
+    }
     Ok(())
+}
+
+fn mount_as_daemon(fuse: DonkeyFuse, mount_point: &str, options: Vec<&OsStr>, log: Logger) {
+    use nix::unistd::{fork, ForkResult};
+
+    match fork() {
+        Ok(ForkResult::Parent { .. }) => {}
+        Ok(ForkResult::Child) => {
+            fuse::mount(fuse, &mount_point, &options).ok();
+        }
+        Err(_) => error!(log, "Failed to fork."),
+    }
 }
 
 fn logger() -> Logger {
